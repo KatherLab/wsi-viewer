@@ -152,6 +152,33 @@ def resolve_by_id_fast(slide_id: str) -> Path:
     # But we'll cache it for future use
     raise FileNotFoundError(f"Slide id not found in cache: {slide_id}")
 
+def resolve_by_id_with_fallback(slide_id: str) -> Path:
+    """Fast path resolution using cache with fallback to slow search."""
+    # Check memory cache first
+    if slide_id in path_cache:
+        p = Path(path_cache[slide_id])
+        if p.exists():
+            return p
+        else:
+            # Cached path no longer exists
+            del path_cache[slide_id]
+    
+    # Not in cache - do a slow search and cache it
+    log.info(f"Cache miss for {slide_id}, searching...")
+    for base in ROOTS.keys():
+        for root, _, files in os.walk(base):
+            for f in files:
+                p = Path(root) / f
+                if p.suffix.lower() in EXTS:
+                    file_id = stable_id_from_path(p)
+                    # Cache this and any other files we find
+                    path_cache[file_id] = str(p)
+                    if file_id == slide_id:
+                        save_path_cache()  # Save immediately for important finds
+                        return p
+    
+    raise FileNotFoundError(f"Slide id not found: {slide_id}")
+
 def update_path_cache_from_dir(dir_path: Path, extensions: list[str]):
     """Update path cache when listing a directory."""
     try:
@@ -500,15 +527,16 @@ async def api_associated_list(slide_id: str):
 @app.get("/api/associated/{slide_id}/{image_name}")
 async def api_associated_image(slide_id: str, image_name: str):
     try:
-        p = resolve_by_id_fast(slide_id)
+        p = resolve_by_id_with_fallback(slide_id)
     except FileNotFoundError:
-        raise HTTPException(404, "Slide not found - please navigate to its directory first")
+        raise HTTPException(404, "Slide not found")
         
     def get_image():
         slide = openslide.open_slide(str(p))
         try:
             if image_name not in slide.associated_images:
-                raise HTTPException(404, f"Associated image '{image_name}' not found")
+                # This is not an error - just return 404
+                return None
                 
             img = slide.associated_images[image_name]
             
@@ -523,12 +551,15 @@ async def api_associated_image(slide_id: str, image_name: str):
             
     try:
         img_bytes = await run_with_timeout(get_image, timeout=10)
+        if img_bytes is None:
+            raise HTTPException(404, f"Associated image '{image_name}' not found")
         return Response(content=img_bytes, media_type="image/jpeg")
     except HTTPException:
         raise
     except Exception as e:
         log.exception("Failed to get associated image %s for %s: %s", image_name, p, e)
         raise HTTPException(500, "Failed to get associated image")
+
 
 @app.get("/static/{filename}")
 async def serve_static(filename: str):
