@@ -251,20 +251,52 @@
 const { createApp } = Vue;
 
 /* Folder tree component - recursive */
+/* Folder tree component - with on-demand loading */
 const Folder = {  
   name: 'Folder',
   props: ["node", "selectedPath"],
   emits: ["select-dir"],
-  data(){ return { open:false } },
+  data(){ 
+    return { 
+      open: false,
+      loading: false,
+      childrenLoaded: false,
+      localChildren: null
+    } 
+  },
   methods:{
-    toggle(){ 
+    async toggle(){ 
+      // If opening and children not loaded yet, fetch them
+      if (!this.open && !this.childrenLoaded && this.node.has_children) {
+        this.loading = true;
+        try {
+          const response = await fetch('/api/expand?' + new URLSearchParams({path: this.node.path}));
+          if (response.ok) {
+            this.localChildren = await response.json();
+            this.childrenLoaded = true;
+          }
+        } catch (e) {
+          console.error('Failed to load children:', e);
+        } finally {
+          this.loading = false;
+        }
+      }
+      
       this.open = !this.open;
       this.$emit("select-dir", this.node.path);
     }
   },
   computed:{ 
-    hasChildren(){ return this.node.children && this.node.children.length > 0 },
-    isSelected(){ return this.selectedPath === this.node.path }
+    hasChildren(){ 
+      return this.node.has_children || (this.node.children && this.node.children.length > 0);
+    },
+    children() {
+      // Use local children if loaded, otherwise use node.children if available
+      return this.localChildren || this.node.children || [];
+    },
+    isSelected(){ 
+      return this.selectedPath === this.node.path;
+    }
   },
   template:`
     <div>
@@ -272,16 +304,18 @@ const Folder = {
         <div>
           <strong>{{ node.name }}</strong>
           <small style="color:var(--muted)"> · {{ node.slide_count }} slides</small>
+          <span v-if="loading" style="margin-left:8px;color:var(--muted)">(loading...)</span>
         </div>
         <div class="right">
           <span v-if="hasChildren" style="color:var(--muted)">{{ open ? "▾" : "▸" }}</span>
         </div>
       </div>
-      <div class="children" v-if="open && hasChildren">
-        <folder v-for="c in node.children" :key="c.id" :node="c" :selected-path="selectedPath" @select-dir="$emit('select-dir',$event)"></folder>
+      <div class="children" v-if="open && children.length > 0">
+        <folder v-for="c in children" :key="c.id" :node="c" :selected-path="selectedPath" @select-dir="$emit('select-dir',$event)"></folder>
       </div>
     </div>`
 }
+
 
 /* App */
 const app = createApp({

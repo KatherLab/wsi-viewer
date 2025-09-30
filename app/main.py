@@ -16,7 +16,7 @@ import openslide
 
 from .config import AppCfg
 from .cache import make_cache, Cache
-from .fs_index import build_tree, stable_id_from_path
+from .fs_index import stable_id_from_path
 from .thumbs import make_preview_bytes
 from .dz import DZ
 from .models import SlideMeta
@@ -85,13 +85,60 @@ def resolve_by_id(slide_id: str) -> Path:
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request, "roots": ROOTS})
 
+# Add this new endpoint for expanding directories
+@app.get("/api/expand")
+async def api_expand(path: str):
+    """Expand a directory to get its immediate children."""
+    try:
+        dirp = Path(path)
+        
+        if not dirp.exists() or not dirp.is_dir():
+            raise HTTPException(404, "Directory not found")
+        
+        # Check cache first
+        k = Cache.key("expand", path)
+        try:
+            raw = cache.get(k)
+            if raw:
+                log.debug(f"Using cached expansion for {path}")
+                return json.loads(raw)
+        except Exception as e:
+            log.debug(f"Expand cache get failed: {e}")
+        
+        # Build shallow tree for this directory
+        log.info(f"Expanding directory: {path}")
+        from .fs_index import scan_directory_shallow
+        
+        children, slide_count = scan_directory_shallow(dirp, list(EXTS), cfg.exclude)
+        
+        # Sort children
+        children.sort(key=lambda n: (n.slide_count == 0, n.name.lower()))
+        
+        # Convert to dict for JSON serialization
+        result = [child.model_dump() for child in children]
+        
+        # Cache the result
+        try:
+            cache.setex(k, cache.ttl_tree, json.dumps(result).encode())
+        except Exception as e:
+            log.debug(f"Expand cache set failed: {e}")
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception(f"Failed to expand directory {path}: {e}")
+        raise HTTPException(500, "Failed to expand directory")
+
+# Update the tree endpoint to use shallow loading
 @app.get("/api/tree")
 async def api_tree():
+    """Get root directories with shallow loading."""
     trees = []
     for base, label in ROOTS.items():
         base_path = Path(base)
         
-        # Check if the path exists and is accessible
         if not base_path.exists():
             log.warning(f"Root path does not exist: {base}")
             trees.append({
@@ -99,8 +146,9 @@ async def api_tree():
                 "name": label or base_path.name,
                 "path": base,
                 "is_dir": True,
-                "children": [],
+                "children": None,
                 "slide_count": 0,
+                "has_children": False,
             })
             continue
             
@@ -108,7 +156,7 @@ async def api_tree():
             log.warning(f"Root path is not a directory: {base}")
             continue
             
-        k = Cache.key("tree", base)
+        k = Cache.key("tree_shallow", base)
         try:
             raw = cache.get(k)
             if raw:
@@ -116,8 +164,10 @@ async def api_tree():
                 trees.append(json.loads(raw))
                 continue
                 
-            log.info(f"Building tree for {base}")
-            node = build_tree(base_path, list(EXTS), cfg.exclude)
+            log.info(f"Building shallow tree for {base}")
+            from .fs_index import build_tree_shallow
+            
+            node = build_tree_shallow(base_path, list(EXTS), cfg.exclude)
             
             # Use the label from config if available
             if label:
@@ -134,17 +184,18 @@ async def api_tree():
             
         except Exception as e:
             log.exception("Tree build failed for %s: %s", base, e)
-            # Fallback placeholder for the failed root
             trees.append({
                 "id": stable_id_from_path(base_path),
                 "name": label or base_path.name,
                 "path": base,
                 "is_dir": True,
-                "children": [],
+                "children": None,
                 "slide_count": 0,
+                "has_children": False,
             })
             
     return trees
+
 
 
 @app.get("/api/dir")
