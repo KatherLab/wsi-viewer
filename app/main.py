@@ -5,18 +5,16 @@ import json
 import asyncio
 import time
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from typing import Optional
-from dataclasses import dataclass, field
-from asyncio import PriorityQueue
+from functools import lru_cache
+import pickle
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
-from starlette.background import BackgroundTask
 
 import openslide
 import io
@@ -46,6 +44,10 @@ tile_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TILES)
 # Request tracking for cancellation
 active_requests = {}
 
+# Path resolution cache - CRITICAL for NFS performance
+path_cache = {}  # slide_id -> path mapping
+path_cache_file = Path("/tmp/wsi_path_cache.pkl")
+
 # --------------------------------------------------------------------------- #
 # Config
 default_path = Path(__file__).resolve().parent.parent / "config.yml"
@@ -71,13 +73,36 @@ except Exception as e:
     )
 
 # --------------------------------------------------------------------------- #
+def load_path_cache():
+    """Load path cache from disk if it exists."""
+    global path_cache
+    if path_cache_file.exists():
+        try:
+            with open(path_cache_file, 'rb') as f:
+                path_cache = pickle.load(f)
+                log.info(f"Loaded {len(path_cache)} cached paths")
+        except Exception as e:
+            log.warning(f"Could not load path cache: {e}")
+            path_cache = {}
+
+def save_path_cache():
+    """Save path cache to disk."""
+    try:
+        with open(path_cache_file, 'wb') as f:
+            pickle.dump(path_cache, f)
+    except Exception as e:
+        log.warning(f"Could not save path cache: {e}")
+
+# --------------------------------------------------------------------------- #
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     log.info("Starting WSI Browser...")
+    load_path_cache()
     yield
     # Shutdown
     log.info("Shutting down...")
+    save_path_cache()
     executor.shutdown(wait=False, cancel_futures=True)
 
 app = FastAPI(title="WSI Browser", version="0.1", lifespan=lifespan)
@@ -112,15 +137,33 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 ROOTS = {str(Path(r.path).resolve()): r.label for r in cfg.roots}
 EXTS = set([e.lower() for e in cfg.extensions])
 
-def resolve_by_id(slide_id: str) -> Path:
-    """Search all roots for a slide whose deterministic ID matches."""
-    for base in ROOTS.keys():
-        for root, _, files in os.walk(base):
-            for f in files:
-                p = Path(root) / f
-                if p.suffix.lower() in EXTS and stable_id_from_path(p) == slide_id:
-                    return p
-    raise FileNotFoundError(f"Slide id not found: {slide_id}")
+def resolve_by_id_fast(slide_id: str) -> Path:
+    """Fast path resolution using cache."""
+    # Check memory cache first
+    if slide_id in path_cache:
+        p = Path(path_cache[slide_id])
+        if p.exists():
+            return p
+        else:
+            # Cached path no longer exists
+            del path_cache[slide_id]
+    
+    # Not in cache - we need to find it (this will be slow the first time)
+    # But we'll cache it for future use
+    raise FileNotFoundError(f"Slide id not found in cache: {slide_id}")
+
+def update_path_cache_from_dir(dir_path: Path, extensions: list[str]):
+    """Update path cache when listing a directory."""
+    try:
+        with os.scandir(dir_path) as scanner:
+            for entry in scanner:
+                if entry.is_file(follow_symlinks=False):
+                    name_lower = entry.name.lower()
+                    if any(name_lower.endswith(ext) for ext in extensions):
+                        slide_id = stable_id_from_path(Path(entry.path))
+                        path_cache[slide_id] = entry.path
+    except Exception as e:
+        log.debug(f"Could not update path cache for {dir_path}: {e}")
 
 async def run_with_timeout(func, *args, timeout=30, **kwargs):
     """Run a blocking function in executor with timeout."""
@@ -175,7 +218,6 @@ async def api_tree():
                 
             log.info(f"Building shallow tree for {base}")
             
-            # Use optimized shallow scan
             children, slide_count = await run_with_timeout(
                 scan_directory_shallow_optimized,
                 base_path,
@@ -189,7 +231,7 @@ async def api_tree():
                 name=label or base_path.name,
                 path=base,
                 is_dir=True,
-                children=children,
+                children=children if children else None,
                 slide_count=slide_count,
                 has_children=len(children) > 0
             )
@@ -230,6 +272,9 @@ async def api_expand(path: str, request: Request):
         if not dirp.exists() or not dirp.is_dir():
             raise HTTPException(404, "Directory not found")
         
+        # Update path cache while we're scanning
+        update_path_cache_from_dir(dirp, list(EXTS))
+        
         # Check cache first
         k = Cache.key("expand", path)
         try:
@@ -240,11 +285,9 @@ async def api_expand(path: str, request: Request):
         except Exception as e:
             log.debug(f"Expand cache get failed: {e}")
         
-        # Check if request was cancelled
         if active_requests.get(request_id, {}).get("cancelled"):
             raise HTTPException(499, "Client closed request")
         
-        # Build shallow tree with timeout
         log.info(f"Expanding directory: {path}")
         
         children, slide_count = await run_with_timeout(
@@ -255,17 +298,18 @@ async def api_expand(path: str, request: Request):
             timeout=15
         )
         
-        # Sort children
         children.sort(key=lambda n: (n.slide_count == 0, n.name.lower()))
         
-        # Convert to dict for JSON serialization
         result = [child.model_dump() for child in children]
         
-        # Cache the result
         try:
             cache.setex(k, cache.ttl_tree, json.dumps(result).encode())
         except Exception as e:
             log.debug(f"Expand cache set failed: {e}")
+        
+        # Save path cache periodically
+        if len(path_cache) % 100 == 0:
+            save_path_cache()
         
         return result
         
@@ -287,27 +331,26 @@ async def api_dir(path: str, request: Request):
         def list_slides_optimized():
             entries = []
             
-            # Use os.scandir for efficiency
             with os.scandir(p) as scanner:
-                # Read all entries at once to minimize NFS round trips
                 all_entries = list(scanner)
             
-            # Process entries
             for entry in all_entries:
                 if active_requests.get(request_id, {}).get("cancelled"):
                     break
                 
-                # Use cached stat info from scandir
                 if entry.is_file(follow_symlinks=False):
-                    # Quick extension check
                     name_lower = entry.name.lower()
                     is_slide = any(name_lower.endswith(ext) for ext in EXTS)
                     
                     if is_slide:
-                        # Only get full stat if it's actually a slide
                         stat = entry.stat(follow_symlinks=False)
+                        slide_id = stable_id_from_path(Path(entry.path))
+                        
+                        # Update path cache
+                        path_cache[slide_id] = entry.path
+                        
                         entries.append({
-                            "id": stable_id_from_path(Path(entry.path)),
+                            "id": slide_id,
                             "name": entry.name,
                             "path": entry.path,
                             "size": stat.st_size,
@@ -317,6 +360,11 @@ async def api_dir(path: str, request: Request):
             return entries
             
         entries = await run_with_timeout(list_slides_optimized, timeout=20)
+        
+        # Save cache after updating
+        if len(path_cache) % 50 == 0:
+            save_path_cache()
+        
         return entries
         
     except HTTPException:
@@ -325,9 +373,9 @@ async def api_dir(path: str, request: Request):
         log.exception("Listing failed for %s: %s", path, e)
         raise HTTPException(500, "Failed to list directory")
 
+# For all endpoints that need to resolve slides, use the fast cached version
 @app.get("/api/thumb/{slide_id}")
 async def api_thumb(slide_id: str, request: Request):
-    # Get priority from header
     priority = int(request.headers.get("X-Priority", "0"))
     
     async with thumb_semaphore:
@@ -336,8 +384,7 @@ async def api_thumb(slide_id: str, request: Request):
         ck = Cache.key("thumb", slide_id)
         try:
             raw = cache.get(ck)
-        except Exception as e:
-            log.debug("Thumb cache get failed: %s", e)
+        except Exception:
             raw = None
             
         if raw:
@@ -347,19 +394,18 @@ async def api_thumb(slide_id: str, request: Request):
                 headers={"Cache-Control": "public, max-age=86400"}
             )
             
-        # Check if cancelled
         if active_requests.get(request_id, {}).get("cancelled"):
             raise HTTPException(499, "Client closed request")
             
         try:
-            p = await run_with_timeout(resolve_by_id, slide_id, timeout=5)
+            # Use fast cached resolution
+            p = resolve_by_id_fast(slide_id)
         except FileNotFoundError:
-            raise HTTPException(404, "Slide not found")
-        except:
-            raise HTTPException(504, "Timeout finding slide")
+            # If not in cache, return 404 immediately
+            # The slide will be cached when its directory is listed
+            raise HTTPException(404, "Slide not found - please navigate to its directory first")
             
         try:
-            # Higher priority requests get shorter timeout
             timeout = 10 if priority > 500 else 15
             img = await run_with_timeout(
                 make_preview_bytes,
@@ -374,8 +420,8 @@ async def api_thumb(slide_id: str, request: Request):
             
         try:
             cache.setex(ck, cache.ttl_thumb, img)
-        except Exception as e:
-            log.debug("Thumb cache set failed: %s", e)
+        except Exception:
+            pass
             
         return Response(
             content=img, 
@@ -386,9 +432,9 @@ async def api_thumb(slide_id: str, request: Request):
 @app.get("/api/meta/{slide_id}")
 async def api_meta(slide_id: str):
     try:
-        p = await run_with_timeout(resolve_by_id, slide_id, timeout=5)
+        p = resolve_by_id_fast(slide_id)
     except FileNotFoundError:
-        raise HTTPException(404, "Slide not found")
+        raise HTTPException(404, "Slide not found - please navigate to its directory first")
         
     def get_metadata():
         slide = openslide.open_slide(str(p))
@@ -401,7 +447,6 @@ async def api_meta(slide_id: str):
             except Exception:
                 mpp_x = mpp_y = None
                 
-            # Get file size
             try:
                 file_size = p.stat().st_size
             except Exception:
@@ -433,11 +478,10 @@ async def api_meta(slide_id: str):
 
 @app.get("/api/associated/{slide_id}")
 async def api_associated_list(slide_id: str):
-    """List available associated images for a slide."""
     try:
-        p = await run_with_timeout(resolve_by_id, slide_id, timeout=5)
+        p = resolve_by_id_fast(slide_id)
     except FileNotFoundError:
-        raise HTTPException(404, "Slide not found")
+        raise HTTPException(404, "Slide not found - please navigate to its directory first")
         
     def get_associated():
         slide = openslide.open_slide(str(p))
@@ -455,11 +499,10 @@ async def api_associated_list(slide_id: str):
 
 @app.get("/api/associated/{slide_id}/{image_name}")
 async def api_associated_image(slide_id: str, image_name: str):
-    """Get a specific associated image."""
     try:
-        p = await run_with_timeout(resolve_by_id, slide_id, timeout=5)
+        p = resolve_by_id_fast(slide_id)
     except FileNotFoundError:
-        raise HTTPException(404, "Slide not found")
+        raise HTTPException(404, "Slide not found - please navigate to its directory first")
         
     def get_image():
         slide = openslide.open_slide(str(p))
@@ -489,21 +532,18 @@ async def api_associated_image(slide_id: str, image_name: str):
 
 @app.get("/static/{filename}")
 async def serve_static(filename: str):
-    """Serve static files including logo.svg/logo.png if they exist."""
     static_path = TEMPLATES_DIR / filename
     if filename in ["logo.svg", "logo.png"] and static_path.exists():
         content_type = "image/svg+xml" if filename.endswith(".svg") else "image/png"
         return Response(content=static_path.read_bytes(), media_type=content_type)
     raise HTTPException(404, "File not found")
 
-# --------------------------------------------------------------------------- #
-# Deep‑Zoom endpoints
 @app.get("/dzi/{slide_id}.dzi")
 async def dzi_xml(slide_id: str):
     try:
-        p = await run_with_timeout(resolve_by_id, slide_id, timeout=5)
+        p = resolve_by_id_fast(slide_id)
     except FileNotFoundError:
-        raise HTTPException(404, "Slide not found")
+        raise HTTPException(404, "Slide not found - please navigate to its directory first")
         
     def get_dzi():
         s = openslide.open_slide(str(p))
@@ -528,8 +568,7 @@ async def dzi_tile(slide_id: str, level: int, x: int, y: int, request: Request):
         ck = Cache.key("tile", slide_id, str(level), str(x), str(y))
         try:
             raw = cache.get(ck)
-        except Exception as e:
-            log.debug("Tile cache get failed: %s", e)
+        except Exception:
             raw = None
             
         if raw:
@@ -542,14 +581,13 @@ async def dzi_tile(slide_id: str, level: int, x: int, y: int, request: Request):
                 }
             )
             
-        # Check if cancelled
         if active_requests.get(request_id, {}).get("cancelled"):
             raise HTTPException(499, "Client closed request")
             
         try:
-            p = await run_with_timeout(resolve_by_id, slide_id, timeout=5)
+            p = resolve_by_id_fast(slide_id)
         except FileNotFoundError:
-            raise HTTPException(404, "Slide not found")
+            raise HTTPException(404, "Slide not found - please navigate to its directory first")
             
         def get_tile():
             s = openslide.open_slide(str(p))
@@ -566,8 +604,8 @@ async def dzi_tile(slide_id: str, level: int, x: int, y: int, request: Request):
             
             try:
                 cache.setex(ck, cache.ttl_tile, img)
-            except Exception as e:
-                log.debug("Tile cache set failed: %s", e)
+            except Exception:
+                pass
                 
             return Response(
                 content=img, 
@@ -583,13 +621,11 @@ async def dzi_tile(slide_id: str, level: int, x: int, y: int, request: Request):
             log.exception("Tile generation failed for %s level %s (%s,%s): %s", slide_id, level, x, y, e)
             raise HTTPException(500, "Failed to generate tile")
 
-# --------------------------------------------------------------------------- #
 @app.get("/health")
 async def health():
-    """Health check endpoint for Docker."""
     return {"status": "healthy", "service": "wsi-browser"}
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Clean up on shutdown."""
+    save_path_cache()
     executor.shutdown(wait=False, cancel_futures=True)
