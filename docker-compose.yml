@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: wsi-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - wsi-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+  wsi-browser:
+    build: .
+    container_name: wsi-browser
+    restart: unless-stopped
+    ports:
+      - "8010:8010"
+    environment:
+      - WSI_CONFIG=/app/config.yml
+      - PYTHONUNBUFFERED=1
+      - UV_SYSTEM_PYTHON=1
+    volumes:
+      # Configuration
+      - ./config.yml:/app/config.yml:ro
+      
+      # static files (logo)
+      - ./app/static:/app/app/static:ro
+      
+      # Mount your slide directories (read-only)
+      - /path/to/slides:/path/to/slides:ro
+      
+      
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - wsi-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8010/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  wsi-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+    driver: local

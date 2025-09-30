@@ -1,0 +1,554 @@
+<!doctype html>
+{% raw %}
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>WSI Browser</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <!-- Vue 3 with compiler (needed for in-page templates) -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/openseadragon@5.0.1/build/openseadragon/openseadragon.min.js"></script>
+  <style>
+    :root{
+      --bg:#f7f9fc; --panel:#ffffff; --muted:#6b7280;
+      --border:#e5e7eb; --accent:#2563eb; --chip:#f3f4f6;
+      --shadow:0 6px 20px rgba(0,0,0,.06), 0 2px 6px rgba(0,0,0,.05);
+      --radius:12px; --danger:#ef4444; --selected:#e0e7ff;
+    }
+    *{box-sizing:border-box}
+    html,body,#app{height:100%;margin:0}
+    body{background:var(--bg);color:#111827;font-family:system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif}
+
+    header{position:sticky;top:0;z-index:100;padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;background:#fff;box-shadow:0 2px 4px rgba(0,0,0,.03)}
+    .brand{display:flex;align-items:center;gap:10px}
+    .brand img{height:28px;width:auto}
+    .brand-text{font-weight:700;color:var(--accent);letter-spacing:.2px}
+
+    .container{display:grid;grid-template-columns:290px 1fr;height:calc(100% - 54px)}
+    aside{border-right:1px solid var(--border);overflow:auto;background:var(--chip)}
+    main{min-height:0;display:grid;position:relative}
+
+    /* Search */
+    .search{padding:12px}
+    .search input{width:100%;padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:#fff;color:#111827;outline:none}
+
+    /* Tree */
+    .tree{padding:8px}
+    .dir{padding:8px 10px;border-radius:10px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;transition:all .15s;margin-bottom:2px}
+    .dir:hover{background:#eef2f7}
+    .dir.selected{background:var(--selected);border:1px solid var(--accent);font-weight:500}
+    .dir .right{display:flex;align-items:center;gap:8px}
+    .children{padding-left:12px;border-left:1px dashed #cbd5e1;margin-left:6px}
+
+    /* Grid of slides */
+    .grid{padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;overflow:auto;border-bottom:1px solid var(--border);background:#fff}
+    .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;overflow:hidden;box-shadow:var(--shadow);transition:transform .12s, box-shadow .12s}
+    .card:hover{transform:translateY(-1px);box-shadow:0 10px 28px rgba(0,0,0,.08)}
+    .thumb{width:100%;height:180px;background:#f1f5f9;display:grid;place-items:center;position:relative;overflow:hidden}
+    .thumb img{width:100%;height:100%;object-fit:contain;background:#fff}
+    .thumb .fallback{position:absolute;inset:0;display:grid;place-items:center}
+    .meta{padding:10px 12px;font-size:.9rem;color:#374151}
+    .meta-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+    .filename{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+    .filesize{color:var(--muted);font-size:0.85rem}
+    .ext-pill{font-size:.72rem;background:#eef2ff;color:#1e3a8a;padding:2px 8px;border-radius:999px;border:1px solid #c7d2fe}
+
+    /* Viewer */
+    #viewer{position:relative;background:#fff;min-height:0;display:grid;grid-template-columns:1fr 320px}
+    #viewer.no-sidebar{grid-template-columns:1fr}
+    #osd-container{position:relative;background:#fff}
+    #osd{position:absolute;inset:0;background:#fff}
+    canvas.overlay{position:absolute;inset:0;pointer-events:none;z-index:10}
+
+    /* Back button */
+    .back-btn{position:absolute;top:16px;left:16px;z-index:20;width:44px;height:44px;border-radius:50%;border:1px solid var(--border);background:rgba(255,255,255,.98);color:#111827;cursor:pointer;display:grid;place-items:center;box-shadow:var(--shadow);transition:all .2s}
+    .back-btn:hover{background:#f3f4f6;transform:scale(1.05)}
+
+    /* Sidebar */
+    .sidebar{background:var(--panel);border-left:1px solid var(--border);overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:20px}
+    .sidebar h3{margin:0;font-size:1.1rem;color:#111827}
+    .info-section{background:var(--chip);border-radius:10px;padding:14px}
+    .info-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)}
+    .info-row:last-child{border-bottom:none}
+    .info-label{color:var(--muted);font-size:0.9rem}
+    .info-value{color:#111827;font-weight:500;font-size:0.9rem;text-align:right;max-width:60%;word-break:break-word}
+    .label-image{width:100%;border-radius:8px;margin-top:10px;cursor:pointer}
+    .toggle-sidebar{position:absolute;top:16px;right:16px;z-index:20;width:36px;height:36px;border-radius:8px;border:1px solid var(--border);background:rgba(255,255,255,.98);cursor:pointer;display:grid;place-items:center}
+
+    /* Toolbar */
+    .toolbar{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);display:flex;gap:.5rem;background:rgba(255,255,255,.98);border:1px solid var(--border);border-radius:999px;padding:.35rem .5rem;box-shadow:var(--shadow);z-index:15}
+    .tb-btn{width:36px;height:36px;border-radius:50%;border:1px solid var(--border);background:#fff;color:#111827;cursor:pointer;display:grid;place-items:center;transition:all .15s}
+    .tb-btn:hover{background:#f3f4f6}
+    .tb-sep{width:1px;background:var(--border);margin:0 4px}
+
+    /* Empty state */
+    .empty{color:var(--muted);display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:12px}
+
+    /* Layout modes */
+    .mode-grid main{grid-template-rows:1fr}
+    .mode-viewer main{grid-template-rows:1fr}
+
+    /* Fullscreen adjustments */
+    #viewer:-webkit-full-screen .toolbar,
+    #viewer:-webkit-full-screen .back-btn,
+    #viewer:-webkit-full-screen .toggle-sidebar,
+    #viewer:-webkit-full-screen canvas.overlay,
+    #viewer:fullscreen .toolbar,
+    #viewer:fullscreen .back-btn,
+    #viewer:fullscreen .toggle-sidebar,
+    #viewer:fullscreen canvas.overlay{
+      display:flex !important;
+      visibility:visible !important;
+    }
+  </style>
+</head>
+<body>
+<div id="app" :class="modeClass">
+  <header>
+    <div class="brand">
+      <img v-if="logoUrl" :src="logoUrl" alt="Logo">
+      <span class="brand-text">WSI Browser</span>
+    </div>
+    <div style="flex:1"></div>
+  </header>
+
+  <div class="container">
+    <!-- LEFT: File tree -->
+    <aside>
+      <div class="search">
+        <input v-model="q" placeholder="Filter folders…" aria-label="Filter folders"/>
+      </div>
+      <div class="tree">
+        <folder v-for="t in filteredTrees" :key="t.id" :node="t" :selected-path="selectedPath" @select-dir="selectDir"></folder>
+      </div>
+    </aside>
+
+    <!-- RIGHT: either Grid OR Viewer -->
+    <main>
+      <!-- Grid -->
+      <section class="grid" v-if="!current">
+        <div v-for="s in slides" :key="s.id" class="card" @click="view(s.id)" :title="s.name">
+          <div class="thumb">
+            <img v-if="!s.thumbError" :src="`/api/thumb/${s.id}`" alt="preview" @error="onThumbError(s)"/>
+            <div v-else class="fallback" aria-hidden="true">
+              <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:.6">
+                <rect x="3" y="3" width="18" height="14" rx="2" ry="2"></rect>
+                <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                <path d="M21 20l-5.5-5.5a2 2 0 0 0-2.8 0L3 20"></path>
+              </svg>
+            </div>
+          </div>
+          <div class="meta">
+            <div class="meta-row">
+              <span class="filename" :title="s.name">{{ baseName(s.name) }}</span>
+              <span class="ext-pill">{{ extUpper(s.name) }}</span>
+            </div>
+            <div class="meta-row">
+              <span class="filesize">{{ prettySize(s.size) }}</span>
+            </div>
+          </div>
+        </div>
+        <div v-if="!slides.length" class="empty">
+          <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.4">
+            <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
+          </svg>
+          <span>Select a folder containing slides</span>
+        </div>
+      </section>
+
+      <!-- Viewer -->
+      <section id="viewer" v-else :class="{'no-sidebar': !showSidebar}">
+        <div id="osd-container">
+          <div id="osd" aria-label="Slide viewer"></div>
+          <canvas id="ruler" class="overlay"></canvas>
+          
+          <!-- Back button -->
+          <button class="back-btn" @click="closeViewer" title="Back to grid" aria-label="Back to grid">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M19 12H5M12 19l-7-7 7-7"/>
+            </svg>
+          </button>
+
+          <!-- Toggle sidebar button -->
+          <button class="toggle-sidebar" @click="showSidebar = !showSidebar" title="Toggle info panel">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="9" y1="3" x2="9" y2="21"></line>
+            </svg>
+          </button>
+
+          <div class="toolbar" v-if="osd">
+            <button class="tb-btn" @click="osd.viewport.zoomBy(1/1.2)" title="Zoom out" aria-label="Zoom out">−</button>
+            <button class="tb-btn" @click="osd.viewport.zoomBy(1.2)" title="Zoom in" aria-label="Zoom in">+</button>
+            <div class="tb-sep" aria-hidden="true"></div>
+            <button class="tb-btn" @click="resetView" title="Reset view" aria-label="Reset">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v6h6"/></svg>
+            </button>
+            <button class="tb-btn" @click="fitWidth" title="Fit to width" aria-label="Fit to width">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18"/><path d="M8 3l-4 4 4 4"/><path d="M16 3l4 4-4 4"/></svg>
+            </button>
+            <div class="tb-sep" aria-hidden="true"></div>
+            <button class="tb-btn" @click="toggleFS" :title="isFullscreen ? 'Exit fullscreen' : 'Full screen'">
+              <svg v-if="!isFullscreen" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/>
+              </svg>
+              <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M8 3v3a2 2 0 01-2 2H3m18 0h-3a2 2 0 01-2-2V3m0 18v-3a2 2 0 012-2h3M3 16h3a2 2 0 012 2v3"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Sidebar -->
+        <aside class="sidebar" v-if="showSidebar && slideMeta">
+          <h3>Slide Information</h3>
+          
+          <div class="info-section">
+            <div class="info-row">
+              <span class="info-label">Filename</span>
+              <span class="info-value" :title="slideMeta.name">{{ slideMeta.name }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Dimensions</span>
+              <span class="info-value">{{ slideMeta.width }} × {{ slideMeta.height }}</span>
+            </div>
+            <div class="info-row" v-if="slideMeta.vendor">
+              <span class="info-label">Scanner</span>
+              <span class="info-value">{{ slideMeta.vendor }}</span>
+            </div>
+            <div class="info-row" v-if="slideMeta.objective_power">
+              <span class="info-label">Objective</span>
+              <span class="info-value">{{ slideMeta.objective_power }}×</span>
+            </div>
+            <div class="info-row" v-if="slideMeta.mpp_x">
+              <span class="info-label">Resolution</span>
+              <span class="info-value">{{ slideMeta.mpp_x.toFixed(3) }} µm/px</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">Levels</span>
+              <span class="info-value">{{ slideMeta.level_count }}</span>
+            </div>
+            <div class="info-row" v-if="slideMeta.file_size">
+              <span class="info-label">File size</span>
+              <span class="info-value">{{ prettySize(slideMeta.file_size) }}</span>
+            </div>
+          </div>
+
+          <div class="info-section" v-if="associatedImages && associatedImages.length">
+            <h3>Associated Images</h3>
+            <div v-for="img in associatedImages" :key="img.name" style="margin-bottom:10px">
+              <div style="font-size:0.9rem;color:var(--muted);margin-bottom:4px">{{ img.name }}</div>
+              <img :src="img.url" :alt="img.name" class="label-image" @click="viewFullImage(img.url)"/>
+            </div>
+          </div>
+        </aside>
+      </section>
+    </main>
+  </div>
+</div>
+
+<script>
+const { createApp } = Vue;
+
+/* Folder tree component - recursive */
+const Folder = {  
+  name: 'Folder',
+  props: ["node", "selectedPath"],
+  emits: ["select-dir"],
+  data(){ return { open:false } },
+  methods:{
+    toggle(){ 
+      this.open = !this.open;
+      this.$emit("select-dir", this.node.path);
+    }
+  },
+  computed:{ 
+    hasChildren(){ return this.node.children && this.node.children.length > 0 },
+    isSelected(){ return this.selectedPath === this.node.path }
+  },
+  template:`
+    <div>
+      <div class="dir" @click="toggle" :aria-expanded="open" :class="{selected: isSelected}">
+        <div>
+          <strong>{{ node.name }}</strong>
+          <small style="color:var(--muted)"> · {{ node.slide_count }} slides</small>
+        </div>
+        <div class="right">
+          <span v-if="hasChildren" style="color:var(--muted)">{{ open ? "▾" : "▸" }}</span>
+        </div>
+      </div>
+      <div class="children" v-if="open && hasChildren">
+        <folder v-for="c in node.children" :key="c.id" :node="c" :selected-path="selectedPath" @select-dir="$emit('select-dir',$event)"></folder>
+      </div>
+    </div>`
+}
+
+/* App */
+const app = createApp({
+  components:{ Folder },
+  data(){ 
+    return { 
+      trees:[], 
+      q:"", 
+      slides:[], 
+      osd:null, 
+      current:null, 
+      mpp:0.25, 
+      rotation:0,
+      showSidebar:true,
+      slideMeta:null,
+      associatedImages:[],
+      selectedPath:null,
+      isFullscreen:false,
+      logoUrl:null
+    } 
+  },
+  computed:{
+    filteredTrees(){
+      if(!this.q) return this.trees
+      const term = this.q.toLowerCase()
+      const match = (n)=> n.name.toLowerCase().includes(term) || (n.children||[]).some(match)
+      const clone = (n)=> ({...n, children:(n.children||[]).map(clone).filter(match)})
+      return this.trees.map(clone).filter(match)
+    },
+    modeClass(){ return this.current ? 'mode-viewer' : 'mode-grid' }
+  },
+  methods:{
+    prettySize(b){ 
+      if(!b && b!==0) return ""; 
+      const u=["B","KB","MB","GB","TB"]; 
+      let i=0; 
+      while(b>1024 && i<u.length-1){ b/=1024; i++ } 
+      return b.toFixed(b<10 && i>0 ? 1 : 0) + " " + u[i] 
+    },
+    baseName(name){ const i=name.lastIndexOf("."); return i>0 ? name.slice(0,i) : name },
+    extName(name){ const i=name.lastIndexOf("."); return i>0 ? name.slice(i+1) : "" },
+    extUpper(name){ return this.extName(name).toUpperCase() },
+
+    async checkLogo(){
+      // Check for logo.svg first, then logo.png
+      try {
+        const svgResp = await fetch('/static/logo.svg', {method: 'HEAD'})
+        if(svgResp.ok) {
+          this.logoUrl = '/static/logo.svg'
+          return
+        }
+      } catch(e) {}
+      
+      try {
+        const pngResp = await fetch('/static/logo.png', {method: 'HEAD'})
+        if(pngResp.ok) {
+          this.logoUrl = '/static/logo.png'
+        }
+      } catch(e) {}
+    },
+
+    async loadTrees(){ 
+      this.trees = await (await fetch("/api/tree")).json() 
+    },
+    
+    selectDir(path){
+      this.selectedPath = path;
+      this.openDir(path);
+    },
+    
+    async openDir(path){ 
+      this.current=null; 
+      this.slides = await (await fetch("/api/dir?" + new URLSearchParams({path}))).json() 
+    },
+    
+    onThumbError(s){ s.thumbError = true },
+
+    async view(id){
+      this.current = id
+      this.slideMeta = await (await fetch("/api/meta/" + id)).json()
+      this.mpp = this.slideMeta.mpp_x || 0.25
+      this.rotation = 0
+      this.associatedImages = []
+      
+      // Load associated images
+      try {
+        const assocResp = await fetch("/api/associated/" + id)
+        if(assocResp.ok) {
+          const assocList = await assocResp.json()
+          this.associatedImages = assocList.map(name => ({
+            name: name,
+            url: `/api/associated/${id}/${name}`
+          }))
+        }
+      } catch(e) {
+        console.log("Could not load associated images:", e)
+      }
+      
+      if(this.osd){ this.osd.destroy(); this.osd=null }
+      this.osd = OpenSeadragon({
+        id:"osd",
+        tileSources:"/dzi/" + id + ".dzi",
+        showNavigator:true,
+        navigatorPosition: 'BOTTOM_RIGHT',
+        navigatorSizeRatio: 0.15,
+        showZoomControl:false,
+        showHomeControl:false,
+        showFullPageControl:false,
+        visibilityRatio:1,
+        minZoomLevel:0.001,
+        maxZoomLevel:40,
+        background:"#ffffff"
+      })
+      this.$nextTick(()=>{ attachRuler(this.osd, this.mpp) })
+    },
+    
+    toggleFS(){ 
+      const viewer = document.getElementById('viewer');
+      if (!document.fullscreenElement) {
+        viewer.requestFullscreen();
+        this.isFullscreen = true;
+      } else {
+        document.exitFullscreen();
+        this.isFullscreen = false;
+      }
+    },
+    
+    closeViewer(){ 
+      if(this.osd){ this.osd.destroy(); this.osd=null } 
+      this.current=null 
+      this.slideMeta=null
+      this.associatedImages=[]
+      this.isFullscreen = false
+      if(document.fullscreenElement) {
+        document.exitFullscreen();
+      }
+    },
+    
+    resetView(){ 
+      if(!this.osd) return; 
+      this.rotation=0; 
+      this.osd.viewport.setRotation(0); 
+      this.osd.viewport.goHome(true) 
+    },
+    
+    fitWidth(){
+      if(!this.osd) return
+      const item=this.osd.world.getItemAt(0); 
+      if(!item) return
+      const bounds=item.getBounds();
+      const vp=this.osd.viewport; 
+      const w=bounds.width
+      if(w>0){ 
+        const containerAspect=vp.getContainerSize().x/vp.getContainerSize().y; 
+        vp.fitBoundsWithConstraints(new OpenSeadragon.Rect(bounds.x, bounds.y, w, w/containerAspect), true) 
+      }
+    },
+    
+    viewFullImage(url){
+      window.open(url, '_blank')
+    }
+  },
+  mounted(){ 
+    this.loadTrees();
+    this.checkLogo();
+    
+    // Listen for fullscreen changes
+    document.addEventListener('fullscreenchange', () => {
+      this.isFullscreen = !!document.fullscreenElement;
+    });
+  }
+})
+app.mount("#app")
+
+/* Ruler overlay */
+function attachRuler(viewer, mppX){
+  const canvas = document.getElementById("ruler")
+  
+  function resize(){
+    const DPR=window.devicePixelRatio||1, rect=viewer.element.getBoundingClientRect()
+    canvas.width=Math.floor(rect.width*DPR); 
+    canvas.height=Math.floor(rect.height*DPR)
+    canvas.style.width=rect.width+"px"; 
+    canvas.style.height=rect.height+"px"
+  }
+  
+  function nice(v){ 
+    const p=Math.pow(10,Math.floor(Math.log10(v))); 
+    const d=v/p; 
+    const step=d<2?1:d<5?2:5; 
+    return step*p 
+  }
+  
+  function redraw(){
+    const ctx=canvas.getContext("2d"); 
+    if(!ctx) return
+    const DPR=window.devicePixelRatio||1; 
+    ctx.clearRect(0,0,canvas.width,canvas.height)
+    const vp=viewer.viewport; 
+    const zoom=vp.viewportToImageZoom(vp.getZoom(true))
+    const TARGET=220, imgPx=TARGET/zoom, um=imgPx*mppX, niceUm=nice(um)
+    const barCss=(niceUm/mppX)*zoom, barPx=barCss*DPR
+    const label=niceUm>=1000?`${(niceUm/1000).toFixed(niceUm%1000===0?0:1)} mm`:`${Math.round(niceUm)} µm`
+    const item=viewer.world.getItemAt(0); 
+    if(!item) return
+    const size=item.getContentSize?item.getContentSize():{x:item.source.dimensions.x, y:item.source.dimensions.y}
+    const bl=item.imageToViewportCoordinates(new OpenSeadragon.Point(0,size.y))
+    const blPx=vp.pixelFromPoint(bl,true)
+    
+    // Add padding from left edge and keep above toolbar
+    const leftPad=30*DPR;
+    const bottomPad=80*DPR;
+    let x0=blPx.x*DPR+leftPad, y0=blPx.y*DPR-bottomPad
+    x0=Math.max(leftPad,Math.min(x0,canvas.width-140*DPR)); 
+    y0=Math.max(40*DPR,Math.min(y0,canvas.height-bottomPad))
+
+    // background pill
+    ctx.save()
+    const pillPad=16*DPR
+    const bgW=Math.max(barPx + pillPad*2, 140*DPR), bgH=32*DPR, rx=12*DPR
+    ctx.fillStyle="rgba(255,255,255,.98)"; 
+    ctx.strokeStyle="rgba(17,24,39,.08)"; 
+    ctx.lineWidth=1*DPR
+    ctx.beginPath()
+    ctx.moveTo(x0-pillPad+rx, y0-bgH)
+    ctx.arcTo(x0-pillPad+bgW, y0-bgH, x0-pillPad+bgW, y0, rx)
+    ctx.arcTo(x0-pillPad+bgW, y0, x0-pillPad, y0, rx)
+    ctx.arcTo(x0-pillPad, y0, x0-pillPad, y0-bgH, rx)
+    ctx.arcTo(x0-pillPad, y0-bgH, x0-pillPad+bgW, y0-bgH, rx)
+    ctx.closePath(); 
+    ctx.fill(); 
+    ctx.stroke()
+    ctx.restore()
+
+    // rule + label
+    const yRule=y0-12*DPR
+    ctx.strokeStyle="#111827"; 
+    ctx.lineWidth=2*DPR; 
+    ctx.beginPath(); 
+    ctx.moveTo(x0,yRule); 
+    ctx.lineTo(x0+barPx,yRule); 
+    ctx.stroke()
+    ctx.lineWidth=6*DPR; 
+    ctx.beginPath(); 
+    ctx.moveTo(x0,yRule); 
+    ctx.lineTo(x0,yRule); 
+    ctx.stroke(); 
+    ctx.beginPath(); 
+    ctx.moveTo(x0+barPx,yRule); 
+    ctx.lineTo(x0+barPx,yRule); 
+    ctx.stroke()
+    ctx.fillStyle="#111827"; 
+    ctx.font=`${12*DPR}px system-ui,-apple-system,Segoe UI,Roboto,Arial`; 
+    ctx.textBaseline='bottom'
+    ctx.fillText(label, x0, y0-16*DPR)
+  }
+  
+  function full(){ resize(); redraw() }
+  resize(); 
+  window.addEventListener("resize", full)
+  viewer.addHandler("update-viewport", redraw)
+  viewer.addHandler("full-screen", ()=>{ setTimeout(full, 100) })
+  viewer.addOnceHandler("open", full)
+  
+  return { resize, redraw }
+}
+</script>
+</body>
+</html>
+{% endraw %}

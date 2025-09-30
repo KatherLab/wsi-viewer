@@ -1,0 +1,34 @@
+# Directories exposed to users in the UI
+roots:
+  - path: "/path/to/slides"
+    label: "Core Biobank"
+    
+exclude:
+  - "__pycache__"
+  - "tmp"
+  - ".git"
+  - "*.zip"
+
+extensions:
+  - ".svs"
+  - ".tif"
+  - ".tiff"
+  - ".ndpi"
+  - ".scn"
+  - ".mrxs"
+  - ".bif"
+
+cache:
+  enabled: true
+  # Use Docker service name for Redis
+  redis_url: "redis://redis:6379/0"
+  ttl_seconds:
+    tree: 60
+    thumb: 86400
+    tile: 3600
+
+thumbnails:
+  max_px: 512
+  prefer_associated: true
+
+cors_allow_origins: ["*"]
