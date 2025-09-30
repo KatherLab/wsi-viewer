@@ -5,7 +5,6 @@
   <meta charset="utf-8"/>
   <title>WSI Browser</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <!-- Vue 3 with compiler (needed for in-page templates) -->
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/openseadragon@5.0.1/build/openseadragon/openseadragon.min.js"></script>
   <style>
@@ -40,7 +39,7 @@
     .dir .right{display:flex;align-items:center;gap:8px}
     .children{padding-left:12px;border-left:1px dashed #cbd5e1;margin-left:6px}
 
-    /* Slide browser controls */
+    /* Browser controls */
     .browser-controls{padding:12px 14px;background:#fff;border-bottom:1px solid var(--border);display:flex;gap:12px;align-items:center}
     .slide-search{flex:1;position:relative}
     .slide-search input{width:100%;padding:8px 12px 8px 36px;border-radius:8px;border:1px solid var(--border);background:#fff;outline:none}
@@ -49,8 +48,9 @@
     .view-btn{padding:6px 10px;border:none;background:transparent;cursor:pointer;border-radius:6px;color:#6b7280;transition:all .15s}
     .view-btn.active{background:#fff;color:#111827;box-shadow:0 1px 3px rgba(0,0,0,.1)}
     .slide-count{color:var(--muted);font-size:0.9rem}
+    .loading-badge{background:#fbbf24;color:#92400e;padding:2px 8px;border-radius:999px;font-size:0.75rem;font-weight:600}
     
-    /* Grid view with virtual scrolling */
+    /* Grid view */
     .grid-container{flex:1;overflow-y:auto;background:#fff;position:relative}
     .grid{padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;position:relative}
     
@@ -59,18 +59,24 @@
     .list{padding:8px}
     .list-item{display:flex;align-items:center;padding:10px 14px;border:1px solid var(--border);background:#fff;margin-bottom:4px;border-radius:8px;cursor:pointer;transition:all .15s}
     .list-item:hover{background:var(--chip);transform:translateX(2px)}
-    .list-thumb{width:60px;height:45px;background:#f1f5f9;border-radius:6px;margin-right:14px;overflow:hidden;flex-shrink:0}
+    .list-thumb{width:60px;height:45px;background:#f1f5f9;border-radius:6px;margin-right:14px;overflow:hidden;flex-shrink:0;position:relative}
     .list-thumb img{width:100%;height:100%;object-fit:cover}
+    .list-thumb .loading-spinner{position:absolute;inset:0;display:grid;place-items:center;background:rgba(255,255,255,0.9)}
     .list-info{flex:1;min-width:0}
     .list-name{font-weight:500;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .list-meta{display:flex;gap:12px;margin-top:4px;font-size:0.85rem;color:var(--muted)}
     .list-ext{background:#eef2ff;color:#1e3a8a;padding:2px 6px;border-radius:4px;font-size:0.75rem}
 
     /* Card styles */
-    .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;overflow:hidden;box-shadow:var(--shadow);transition:transform .12s, box-shadow .12s}
+    .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;overflow:hidden;box-shadow:var(--shadow);transition:transform .12s, box-shadow .12s;position:relative}
     .card:hover{transform:translateY(-1px);box-shadow:0 10px 28px rgba(0,0,0,.08)}
-    .card.loading{animation:pulse 1.5s ease-in-out infinite}
-    @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+    .card.loading .thumb{background:#f3f4f6}
+    .card.loading .thumb::after{
+      content:'';position:absolute;inset:0;
+      background:linear-gradient(90deg,transparent,rgba(255,255,255,0.5),transparent);
+      animation:shimmer 1.5s infinite;
+    }
+    @keyframes shimmer{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
     .thumb{width:100%;height:180px;background:#f1f5f9;display:grid;place-items:center;position:relative;overflow:hidden}
     .thumb img{width:100%;height:100%;object-fit:contain;background:#fff}
     .thumb .fallback{position:absolute;inset:0;display:grid;place-items:center}
@@ -89,7 +95,7 @@
     .page-info{color:var(--muted);padding:0 12px}
 
     /* Viewer */
-    #viewer{position:relative;background:#fff;min-height:0;display:grid;grid-template-columns:1fr 320px}
+    #viewer{position:relative;background:#fff;min-height:0;display:grid;grid-template-columns:1fr 320px;flex:1}
     #viewer.no-sidebar{grid-template-columns:1fr}
     #osd-container{position:relative;background:#fff}
     #osd{position:absolute;inset:0;background:#fff}
@@ -135,6 +141,10 @@
       display:flex !important;
       visibility:visible !important;
     }
+
+    /* Debug panel */
+    .debug-panel{position:fixed;bottom:10px;right:10px;background:rgba(0,0,0,0.8);color:#fff;padding:8px 12px;border-radius:8px;font-size:0.75rem;font-family:monospace;z-index:1000;display:none}
+    .debug-panel.show{display:block}
   </style>
 </head>
 <body>
@@ -145,6 +155,7 @@
       <span class="brand-text">WSI Browser</span>
     </div>
     <div style="flex:1"></div>
+    <span v-if="activeRequests > 0" class="loading-badge">{{ activeRequests }} loading</span>
   </header>
 
   <div class="container">
@@ -158,7 +169,7 @@
       </div>
     </aside>
 
-    <!-- RIGHT: either Grid/List OR Viewer -->
+    <!-- RIGHT: Grid/List OR Viewer -->
     <main>
       <template v-if="!current">
         <!-- Browser controls -->
@@ -172,7 +183,7 @@
           </div>
           
           <div class="view-toggle">
-            <button class="view-btn" :class="{active: viewMode === 'grid'}" @click="viewMode = 'grid'">
+            <button class="view-btn" :class="{active: viewMode === 'grid'}" @click="switchViewMode('grid')">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="3" y="3" width="7" height="7"></rect>
                 <rect x="14" y="3" width="7" height="7"></rect>
@@ -180,7 +191,7 @@
                 <rect x="14" y="14" width="7" height="7"></rect>
               </svg>
             </button>
-            <button class="view-btn" :class="{active: viewMode === 'list'}" @click="viewMode = 'list'">
+            <button class="view-btn" :class="{active: viewMode === 'list'}" @click="switchViewMode('list')">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="8" y1="6" x2="21" y2="6"></line>
                 <line x1="8" y1="12" x2="21" y2="12"></line>
@@ -193,7 +204,7 @@
           </div>
           
           <div class="slide-count">
-            {{ filteredSlides.length }} slides
+            {{ filteredSlides.length }} {{ filteredSlides.length === 1 ? 'slide' : 'slides' }}
             <span v-if="slideSearch">(filtered)</span>
           </div>
         </div>
@@ -201,18 +212,18 @@
         <!-- Grid view -->
         <div v-if="viewMode === 'grid'" class="grid-container" @scroll="handleScroll" ref="gridContainer">
           <div class="grid">
-            <div v-for="(s, idx) in visibleSlides" 
+            <div v-for="s in visibleSlides" 
                  :key="s.id" 
                  class="card" 
-                 :class="{loading: !s.loaded}"
+                 :class="{loading: s.loading}"
                  @click="view(s.id)" 
-                 :title="s.name">
+                 :title="s.name"
+                 :data-slide-id="s.id">
               <div class="thumb">
-                <img v-if="!s.thumbError && s.loaded" 
-                     :src="`/api/thumb/${s.id}`" 
-                     alt="preview" 
-                     @error="onThumbError(s)"
-                     @load="s.thumbLoaded = true"/>
+                <img v-if="s.thumbUrl" 
+                     :src="s.thumbUrl" 
+                     alt="preview"
+                     loading="lazy"/>
                 <div v-else class="fallback" aria-hidden="true">
                   <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.6">
                     <rect x="3" y="3" width="18" height="14" rx="2" ry="2"></rect>
@@ -240,12 +251,13 @@
             <div v-for="s in paginatedSlides" 
                  :key="s.id" 
                  class="list-item" 
-                 @click="view(s.id)">
+                 @click="view(s.id)"
+                 :data-slide-id="s.id">
               <div class="list-thumb">
-                <img v-if="!s.thumbError" 
-                     :src="`/api/thumb/${s.id}`" 
-                     alt="preview" 
-                     @error="onThumbError(s)"/>
+                <div v-if="s.loading" class="loading-spinner">⟳</div>
+                <img v-else-if="s.thumbUrl" 
+                     :src="s.thumbUrl" 
+                     alt="preview"/>
               </div>
               <div class="list-info">
                 <div class="list-name" :title="s.name">{{ s.name }}</div>
@@ -261,19 +273,19 @@
 
         <!-- Pagination for list view -->
         <div v-if="viewMode === 'list' && totalPages > 1" class="pagination">
-          <button class="page-btn" @click="currentPage = 1" :disabled="currentPage === 1">«</button>
-          <button class="page-btn" @click="currentPage--" :disabled="currentPage === 1">‹</button>
+          <button class="page-btn" @click="goToPage(1)" :disabled="currentPage === 1">«</button>
+          <button class="page-btn" @click="goToPage(currentPage-1)" :disabled="currentPage === 1">‹</button>
           
           <template v-for="p in pageNumbers">
             <button v-if="p !== '...'" 
                     class="page-btn" 
                     :class="{active: p === currentPage}"
-                    @click="currentPage = p">{{ p }}</button>
+                    @click="goToPage(p)">{{ p }}</button>
             <span v-else class="page-info">...</span>
           </template>
           
-          <button class="page-btn" @click="currentPage++" :disabled="currentPage === totalPages">›</button>
-          <button class="page-btn" @click="currentPage = totalPages" :disabled="currentPage === totalPages">»</button>
+          <button class="page-btn" @click="goToPage(currentPage+1)" :disabled="currentPage === totalPages">›</button>
+          <button class="page-btn" @click="goToPage(totalPages)" :disabled="currentPage === totalPages">»</button>
           
           <span class="page-info">Page {{ currentPage }} of {{ totalPages }}</span>
         </div>
@@ -377,13 +389,19 @@
       </section>
     </main>
   </div>
+
+  <!-- Debug panel -->
+  <div class="debug-panel" :class="{show: debug}">
+    Active: {{ activeRequests }}<br>
+    Queue: {{ requestQueue.length }}<br>
+    Visible: {{ visibleRange.start }}-{{ visibleRange.end }}
+  </div>
 </div>
 
 <script>
 const { createApp } = Vue;
 
-/* Folder tree component - with on-demand loading */
-/* Folder tree component - with on-demand loading */
+// Folder component
 const Folder = {  
   name: 'Folder',
   props: ["node", "selectedPath"],
@@ -398,7 +416,6 @@ const Folder = {
   },
   methods:{
     async toggle(){ 
-      // If opening and children not loaded yet, fetch them
       if (!this.open && !this.childrenLoaded && this.node.has_children) {
         this.loading = true;
         try {
@@ -429,11 +446,7 @@ const Folder = {
       return this.selectedPath === this.node.path;
     },
     slideCountText() {
-      // Don't show anything if count is 0 or unknown (not loaded yet)
-      if (!this.node.slide_count || this.node.slide_count === 0) {
-        return '';
-      }
-      // Use singular for 1 slide, plural for multiple
+      if (!this.node.slide_count || this.node.slide_count === 0) return '';
       return this.node.slide_count === 1 ? '1 slide' : `${this.node.slide_count} slides`;
     }
   },
@@ -455,36 +468,55 @@ const Folder = {
     </div>`
 }
 
-
-/* App */
+// Main app
 const app = createApp({
   components:{ Folder },
   data(){ 
     return { 
+      // Tree & navigation
       trees:[], 
       q:"", 
+      selectedPath:null,
+      
+      // Slides
       slides:[],
       filteredSlides:[],
       visibleSlides:[],
       slideSearch:"",
+      
+      // View modes
       viewMode:'grid',
       currentPage:1,
       itemsPerPage:50,
+      
+      // Viewer
       osd:null, 
       current:null, 
       mpp:0.25, 
-      rotation:0,
       showSidebar:true,
       slideMeta:null,
       associatedImages:[],
-      selectedPath:null,
+      
+      // UI state
       isFullscreen:false,
       logoUrl:null,
-      scrollTop:0,
-      itemHeight:280,
-      visibleRange:{start:0, end:50}
+      debug:false,
+      
+      // Request management - critical for performance
+      activeRequests:0,
+      pendingRequests: new Map(),
+      requestQueue: [],
+      maxConcurrentThumbs: 2, // Very conservative
+      loadingSlides: new Set(),
+      
+      // Viewport tracking
+      visibleRange:{start:0, end:0},
+      lastScrollTime:0,
+      scrollDebounceTimer:null,
+      viewportObserver:null
     } 
   },
+  
   computed:{
     filteredTrees(){
       if(!this.q) return this.trees
@@ -493,15 +525,19 @@ const app = createApp({
       const clone = (n)=> ({...n, children:(n.children||[]).map(clone).filter(match)})
       return this.trees.map(clone).filter(match)
     },
+    
     modeClass(){ return this.current ? 'mode-viewer' : 'mode-grid' },
+    
     paginatedSlides(){
       const start = (this.currentPage - 1) * this.itemsPerPage;
       return this.filteredSlides.slice(start, start + this.itemsPerPage);
     },
+    
     totalPages(){
       return Math.ceil(this.filteredSlides.length / this.itemsPerPage);
     },
-        pageNumbers(){
+    
+    pageNumbers(){
       const pages = [];
       const total = this.totalPages;
       const current = this.currentPage;
@@ -528,7 +564,9 @@ const app = createApp({
       return pages;
     }
   },
+  
   methods:{
+    // Utility methods
     prettySize(b){ 
       if(!b && b!==0) return ""; 
       const u=["B","KB","MB","GB","TB"]; 
@@ -545,44 +583,206 @@ const app = createApp({
       return d.toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'});
     },
 
-    async checkLogo(){
-      try {
-        const svgResp = await fetch('/static/logo.svg', {method: 'HEAD'})
-        if(svgResp.ok) {
-          this.logoUrl = '/static/logo.svg'
-          return
-        }
-      } catch(e) {}
+    // Critical: Request management
+    async makeRequest(url, priority = 0) {
+      const controller = new AbortController();
+      const requestId = Math.random().toString(36);
+      
+      this.pendingRequests.set(requestId, {controller, priority, url});
+      this.activeRequests++;
       
       try {
-        const pngResp = await fetch('/static/logo.png', {method: 'HEAD'})
-        if(pngResp.ok) {
-          this.logoUrl = '/static/logo.png'
+        const response = await fetch(url, {
+          signal: controller.signal,
+          headers: {'X-Priority': priority.toString()}
+        });
+        return response;
+      } finally {
+        this.pendingRequests.delete(requestId);
+        this.activeRequests--;
+      }
+    },
+    
+    cancelAllRequests() {
+      // Abort everything immediately
+      for (const [id, req] of this.pendingRequests) {
+        req.controller.abort();
+      }
+      this.pendingRequests.clear();
+      this.requestQueue = [];
+      this.loadingSlides.clear();
+      this.activeRequests = 0;
+    },
+    
+    cancelRequestsOutsideViewport() {
+      // Cancel requests for items not in current viewport
+      const inViewport = new Set(
+        this.visibleSlides
+          .slice(this.visibleRange.start, this.visibleRange.end)
+          .map(s => s.id)
+      );
+      
+      for (const [id, req] of this.pendingRequests) {
+        if (req.url.includes('/api/thumb/')) {
+          const slideId = req.url.split('/api/thumb/')[1];
+          if (!inViewport.has(slideId)) {
+            req.controller.abort();
+            this.pendingRequests.delete(id);
+            this.loadingSlides.delete(slideId);
+          }
         }
-      } catch(e) {}
+      }
     },
 
+    // Thumbnail loading with strict viewport priority
+    async loadThumbnail(slide) {
+      if (slide.thumbUrl || slide.thumbError || this.loadingSlides.has(slide.id)) {
+        return;
+      }
+      
+      this.loadingSlides.add(slide.id);
+      slide.loading = true;
+      
+      const controller = new AbortController();
+      const requestId = `thumb-${slide.id}`;
+      
+      // Calculate priority based on viewport position
+      const slideIndex = this.visibleSlides.indexOf(slide);
+      const viewportCenter = (this.visibleRange.start + this.visibleRange.end) / 2;
+      const distance = Math.abs(slideIndex - viewportCenter);
+      const priority = Math.max(0, 1000 - distance * 10);
+      
+      this.pendingRequests.set(requestId, {controller, priority, url: `/api/thumb/${slide.id}`});
+      
+      try {
+        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout
+        
+        const response = await fetch(`/api/thumb/${slide.id}`, {
+          signal: controller.signal,
+          headers: {'X-Priority': priority.toString()}
+        });
+        
+        clearTimeout(timeoutId);
+        
+        if (response.ok) {
+          const blob = await response.blob();
+          slide.thumbUrl = URL.createObjectURL(blob);
+          slide.loading = false;
+        } else {
+          slide.thumbError = true;
+          slide.loading = false;
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          slide.thumbError = true;
+        }
+        slide.loading = false;
+      } finally {
+        this.pendingRequests.delete(requestId);
+        this.loadingSlides.delete(slide.id);
+      }
+    },
+
+    // Smart viewport-based loading
+    updateViewport() {
+      if (this.viewMode !== 'grid' || !this.$refs.gridContainer) return;
+      
+      const container = this.$refs.gridContainer;
+      const scrollTop = container.scrollTop;
+      const clientHeight = container.clientHeight;
+      
+      // Calculate visible range
+      const itemsPerRow = Math.floor(container.clientWidth / 260) || 4;
+      const rowHeight = 280;
+      const firstRow = Math.floor(scrollTop / rowHeight);
+      const lastRow = Math.ceil((scrollTop + clientHeight) / rowHeight);
+      
+      const newStart = Math.max(0, firstRow * itemsPerRow);
+      const newEnd = Math.min(this.visibleSlides.length, (lastRow + 1) * itemsPerRow);
+      
+      // Only update if range changed significantly
+      if (Math.abs(newStart - this.visibleRange.start) > 2 || 
+          Math.abs(newEnd - this.visibleRange.end) > 2) {
+        this.visibleRange = {start: newStart, end: newEnd};
+        
+        // Cancel requests outside new viewport
+        this.cancelRequestsOutsideViewport();
+        
+        // Load only visible thumbnails
+        for (let i = newStart; i < newEnd; i++) {
+          const slide = this.visibleSlides[i];
+          if (slide && !slide.thumbUrl && !slide.thumbError) {
+            this.loadThumbnail(slide);
+          }
+        }
+      }
+    },
+
+    handleScroll(event) {
+      if (this.viewMode !== 'grid') return;
+      
+      // Immediate viewport update
+      this.updateViewport();
+      
+      // Debounced actions
+      if (this.scrollDebounceTimer) {
+        clearTimeout(this.scrollDebounceTimer);
+      }
+      
+      this.scrollDebounceTimer = setTimeout(() => {
+        const container = event.target;
+        const scrollHeight = container.scrollHeight;
+        const scrollTop = container.scrollTop;
+        const clientHeight = container.clientHeight;
+        
+        // Load more slides if near bottom
+        if (scrollTop + clientHeight > scrollHeight - 200) {
+          this.loadMoreSlides();
+        }
+      }, 100);
+    },
+
+    // Data loading
     async loadTrees(){ 
-      this.trees = await (await fetch("/api/tree")).json() 
+      try {
+        const response = await this.makeRequest("/api/tree");
+        if (response.ok) {
+          this.trees = await response.json();
+        }
+      } catch (e) {
+        console.error('Failed to load trees:', e);
+      }
     },
     
     selectDir(path){
+      this.cancelAllRequests(); // Cancel everything when changing dirs
       this.selectedPath = path;
       this.openDir(path);
     },
     
     async openDir(path){ 
+      this.cancelAllRequests();
       this.current = null;
-      this.slides = await (await fetch("/api/dir?" + new URLSearchParams({path}))).json();
-      this.filteredSlides = [...this.slides];
-      this.currentPage = 1;
-      this.slideSearch = "";
+      this.visibleSlides = [];
       
-      // Initialize lazy loading for grid view
-      this.initializeLazyLoading();
+      try {
+        const response = await this.makeRequest("/api/dir?" + new URLSearchParams({path}));
+        if (response.ok) {
+          this.slides = await response.json();
+          this.filteredSlides = [...this.slides];
+          this.currentPage = 1;
+          this.slideSearch = "";
+          this.initializeView();
+        }
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          console.error('Failed to load directory:', e);
+        }
+      }
     },
     
     filterSlides(){
+      this.cancelAllRequests();
       const term = this.slideSearch.toLowerCase();
       if(!term) {
         this.filteredSlides = [...this.slides];
@@ -592,113 +792,82 @@ const app = createApp({
         );
       }
       this.currentPage = 1;
-      this.initializeLazyLoading();
+      this.initializeView();
     },
     
-    initializeLazyLoading(){
-      // For grid view, prepare visible slides with loading states
+    initializeView(){
       if(this.viewMode === 'grid') {
-        this.visibleSlides = this.filteredSlides.slice(0, 50).map(s => ({
+        // Only prepare visible slides
+        this.visibleSlides = this.filteredSlides.map(s => ({
           ...s,
-          loaded: false,
-          thumbLoaded: false
+          loading: false,
+          thumbUrl: null,
+          thumbError: false
         }));
         
-        // Start loading first batch
         this.$nextTick(() => {
-          this.loadVisibleThumbnails();
+          this.updateViewport();
+        });
+      } else {
+        // List view - load thumbnails for current page only
+        this.$nextTick(() => {
+          this.paginatedSlides.forEach(slide => {
+            if (!slide.thumbUrl && !slide.thumbError) {
+              this.loadThumbnail(slide);
+            }
+          });
         });
       }
-    },
-    
-    handleScroll(event){
-      if(this.viewMode !== 'grid') return;
-      
-      const container = event.target;
-      const scrollTop = container.scrollTop;
-      const scrollHeight = container.scrollHeight;
-      const clientHeight = container.clientHeight;
-      
-      // Load more items when near bottom
-      if(scrollTop + clientHeight > scrollHeight - 200) {
-        this.loadMoreSlides();
-      }
-      
-      // Update visible thumbnails based on scroll position
-      this.updateVisibleThumbnails(scrollTop, clientHeight);
     },
     
     loadMoreSlides(){
-      const currentCount = this.visibleSlides.length;
-      const nextBatch = this.filteredSlides.slice(currentCount, currentCount + 50);
-      
-      if(nextBatch.length > 0) {
-        const newSlides = nextBatch.map(s => ({
-          ...s,
-          loaded: false,
-          thumbLoaded: false
-        }));
-        
-        this.visibleSlides.push(...newSlides);
-        
-        this.$nextTick(() => {
-          this.loadVisibleThumbnails();
-        });
-      }
+      // Grid view handles all slides at once
+      // Just update viewport
+      this.updateViewport();
     },
     
-    updateVisibleThumbnails(scrollTop, clientHeight){
-      // Calculate which items are visible
-      const itemsPerRow = Math.floor(this.$refs.gridContainer?.clientWidth / 260) || 4;
-      const rowHeight = 280;
-      const firstVisibleRow = Math.floor(scrollTop / rowHeight);
-      const lastVisibleRow = Math.ceil((scrollTop + clientHeight) / rowHeight);
-      
-      const firstIndex = firstVisibleRow * itemsPerRow;
-      const lastIndex = Math.min(lastVisibleRow * itemsPerRow, this.visibleSlides.length);
-      
-      // Mark items in viewport for loading
-      for(let i = firstIndex; i < lastIndex; i++) {
-        if(this.visibleSlides[i] && !this.visibleSlides[i].loaded) {
-          this.visibleSlides[i].loaded = true;
-        }
-      }
+    switchViewMode(mode){
+      this.cancelAllRequests();
+      this.viewMode = mode;
+      this.initializeView();
     },
     
-    loadVisibleThumbnails(){
-      // Load thumbnails for all currently marked as visible
-      const container = this.$refs.gridContainer;
-      if(!container) return;
-      
-      const scrollTop = container.scrollTop;
-      const clientHeight = container.clientHeight;
-      this.updateVisibleThumbnails(scrollTop, clientHeight);
-    },
-    
-    onThumbError(s){ 
-      s.thumbError = true;
-      s.thumbLoaded = true;
+    goToPage(page){
+      this.cancelAllRequests();
+      this.currentPage = page;
+      this.initializeView();
     },
 
+    // Viewer methods
     async view(id){
-      this.current = id
-      this.slideMeta = await (await fetch("/api/meta/" + id)).json()
-      this.mpp = this.slideMeta.mpp_x || 0.25
-      this.rotation = 0
-      this.associatedImages = []
+      // CRITICAL: Cancel all thumbnail requests when opening viewer
+      this.cancelAllRequests();
+      this.current = id;
+      
+      try {
+        const metaResp = await this.makeRequest("/api/meta/" + id, 1000); // High priority
+        if (metaResp.ok) {
+          this.slideMeta = await metaResp.json();
+          this.mpp = this.slideMeta.mpp_x || 0.25;
+        }
+      } catch (e) {
+        console.error('Failed to load metadata:', e);
+      }
+      
+      this.associatedImages = [];
       
       // Load associated images
       try {
-        const assocResp = await fetch("/api/associated/" + id)
+        const assocResp = await this.makeRequest("/api/associated/" + id, 500);
         if(assocResp.ok) {
-          const assocList = await assocResp.json()
+          const assocList = await assocResp.json();
           this.associatedImages = assocList.map(name => ({
             name: name,
             url: `/api/associated/${id}/${name}`
-          }))
+          }));
         }
       } catch(e) {
-        console.log("Could not load associated images:", e)
+        console.log("Could not load associated images:", e);
       }
       
       if(this.osd){ this.osd.destroy(); this.osd=null }
@@ -715,14 +884,44 @@ const app = createApp({
         minZoomLevel:0.001,
         maxZoomLevel:40,
         background:"#ffffff",
-        gestureSettingsMouse: {
-          scrollToZoom: true,
-          clickToZoom: true,
-          dblClickToZoom: true,
-          pinchToZoom: true
-        }
-      })
-      this.$nextTick(()=>{ attachRuler(this.osd, this.mpp) })
+        // Limit tile requests
+        maxImageCacheCount: 100,
+        imageLoaderLimit: 4
+      });
+      this.$nextTick(()=>{ attachRuler(this.osd, this.mpp) });
+    },
+    
+    closeViewer(){ 
+      this.cancelAllRequests();
+      if(this.osd){ this.osd.destroy(); this.osd=null } 
+      this.current=null;
+      this.slideMeta=null;
+      this.associatedImages=[];
+      this.isFullscreen = false;
+      if(document.fullscreenElement) {
+        document.exitFullscreen();
+      }
+      // Re-initialize grid view
+      this.initializeView();
+    },
+    
+    resetView(){ 
+      if(!this.osd) return; 
+      this.osd.viewport.setRotation(0); 
+      this.osd.viewport.goHome(true);
+    },
+    
+    fitWidth(){
+      if(!this.osd) return;
+      const item=this.osd.world.getItemAt(0); 
+      if(!item) return;
+      const bounds=item.getBounds();
+      const vp=this.osd.viewport; 
+      const w=bounds.width;
+      if(w>0){ 
+        const containerAspect=vp.getContainerSize().x/vp.getContainerSize().y; 
+        vp.fitBoundsWithConstraints(new OpenSeadragon.Rect(bounds.x, bounds.y, w, w/containerAspect), true);
+      }
     },
     
     toggleFS(){ 
@@ -736,48 +935,28 @@ const app = createApp({
       }
     },
     
-    closeViewer(){ 
-      if(this.osd){ this.osd.destroy(); this.osd=null } 
-      this.current=null 
-      this.slideMeta=null
-      this.associatedImages=[]
-      this.isFullscreen = false
-      if(document.fullscreenElement) {
-        document.exitFullscreen();
-      }
-    },
-    
-    resetView(){ 
-      if(!this.osd) return; 
-      this.rotation=0; 
-      this.osd.viewport.setRotation(0); 
-      this.osd.viewport.goHome(true) 
-    },
-    
-    fitWidth(){
-      if(!this.osd) return
-      const item=this.osd.world.getItemAt(0); 
-      if(!item) return
-      const bounds=item.getBounds();
-      const vp=this.osd.viewport; 
-      const w=bounds.width
-      if(w>0){ 
-        const containerAspect=vp.getContainerSize().x/vp.getContainerSize().y; 
-        vp.fitBoundsWithConstraints(new OpenSeadragon.Rect(bounds.x, bounds.y, w, w/containerAspect), true) 
-      }
-    },
-    
     viewFullImage(url){
-      window.open(url, '_blank')
+      window.open(url, '_blank');
+    },
+    
+    async checkLogo(){
+      try {
+        const svgResp = await fetch('/static/logo.svg', {method: 'HEAD'})
+        if(svgResp.ok) {
+          this.logoUrl = '/static/logo.svg'
+          return
+        }
+      } catch(e) {}
+      
+      try {
+        const pngResp = await fetch('/static/logo.png', {method: 'HEAD'})
+        if(pngResp.ok) {
+          this.logoUrl = '/static/logo.png'
+        }
+      } catch(e) {}
     }
   },
-  watch: {
-    viewMode(newMode) {
-      if(newMode === 'grid') {
-        this.initializeLazyLoading();
-      }
-    }
-  },
+  
   mounted(){ 
     this.loadTrees();
     this.checkLogo();
@@ -786,11 +965,42 @@ const app = createApp({
     document.addEventListener('fullscreenchange', () => {
       this.isFullscreen = !!document.fullscreenElement;
     });
+    
+    // Cancel all requests on page unload
+    window.addEventListener('beforeunload', () => {
+      this.cancelAllRequests();
+    });
+    
+    // Setup IntersectionObserver for even better performance (optional)
+    if ('IntersectionObserver' in window && this.viewMode === 'grid') {
+      this.viewportObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            const slideId = entry.target.dataset.slideId;
+            const slide = this.visibleSlides.find(s => s.id === slideId);
+            if (slide && !slide.thumbUrl && !slide.thumbError) {
+              this.loadThumbnail(slide);
+            }
+          }
+        });
+      }, {
+        root: this.$refs.gridContainer,
+        rootMargin: '50px',
+        threshold: 0.01
+      });
+    }
+  },
+  
+  beforeUnmount() {
+    this.cancelAllRequests();
+    if (this.viewportObserver) {
+      this.viewportObserver.disconnect();
+    }
   }
 })
 app.mount("#app")
 
-/* Ruler overlay */
+// Ruler function (same as before but with bottom positioning)
 function attachRuler(viewer, mppX){
   const canvas = document.getElementById("ruler")
   
@@ -819,21 +1029,13 @@ function attachRuler(viewer, mppX){
     const TARGET=220, imgPx=TARGET/zoom, um=imgPx*mppX, niceUm=nice(um)
     const barCss=(niceUm/mppX)*zoom, barPx=barCss*DPR
     const label=niceUm>=1000?`${(niceUm/1000).toFixed(niceUm%1000===0?0:1)} mm`:`${Math.round(niceUm)} µm`
-    const item=viewer.world.getItemAt(0); 
-    if(!item) return
-    const size=item.getContentSize?item.getContentSize():{x:item.source.dimensions.x, y:item.source.dimensions.y}
-    const bl=item.imageToViewportCoordinates(new OpenSeadragon.Point(0,size.y))
-    const blPx=vp.pixelFromPoint(bl,true)
     
-    // Position in bottom-left with proper padding
-    const leftPad = 30*DPR;  // Distance from left edge
-    const bottomPad = 100*DPR;  // Distance from bottom (above toolbar which is ~70px)
-    
-    // Calculate position - start from canvas bottom, move up by bottomPad
+    // Position in bottom-left
+    const leftPad = 30*DPR;
+    const bottomPad = 100*DPR;
     let x0 = leftPad;
     let y0 = canvas.height - bottomPad;
     
-    // Ensure ruler stays within bounds
     x0 = Math.max(leftPad, Math.min(x0, canvas.width - 200*DPR)); 
     y0 = Math.max(100*DPR, Math.min(y0, canvas.height - bottomPad));
 
@@ -864,7 +1066,6 @@ function attachRuler(viewer, mppX){
     ctx.lineTo(x0+barPx,yRule); 
     ctx.stroke()
     
-    // End caps
     ctx.lineWidth=6*DPR; 
     ctx.beginPath(); 
     ctx.moveTo(x0,yRule); 
@@ -875,7 +1076,6 @@ function attachRuler(viewer, mppX){
     ctx.lineTo(x0+barPx,yRule); 
     ctx.stroke()
     
-    // Label text
     ctx.fillStyle="#111827"; 
     ctx.font=`${12*DPR}px system-ui,-apple-system,Segoe UI,Roboto,Arial`; 
     ctx.textBaseline='bottom'
@@ -891,9 +1091,7 @@ function attachRuler(viewer, mppX){
   
   return { resize, redraw }
 }
-
 </script>
 </body>
 </html>
 {% endraw %}
-

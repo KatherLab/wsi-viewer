@@ -3,9 +3,14 @@ from pathlib import Path
 import os
 import hashlib
 import logging
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
 from .models import Node
 
 log = logging.getLogger(__name__)
+
+# Cache for stat operations to avoid repeated filesystem calls
+stat_cache = {}
 
 def stable_id_from_path(p: Path) -> str:
     """Deterministic 16‑char ID derived from the absolute path."""
@@ -15,7 +20,6 @@ def should_skip(name: str, exclude: list[str]) -> bool:
     lname = name.lower()
     for ex in exclude:
         exl = ex.lower()
-        # Very simple glob‑ish handling – treat anything with *
         if exl.startswith("*") or exl.startswith(".") or any(c in exl for c in "*?[]"):
             if exl.strip("*") in lname:
                 return True
@@ -23,108 +27,78 @@ def should_skip(name: str, exclude: list[str]) -> bool:
             return True
     return False
 
-def scan_directory_shallow(dirp: Path, extensions: list[str], exclude: list[str]) -> tuple[list[Node], int]:
+def get_cached_stat(path: Path):
+    """Get cached stat result to avoid repeated filesystem calls."""
+    path_str = str(path)
+    if path_str not in stat_cache:
+        try:
+            stat_cache[path_str] = path.stat()
+        except:
+            stat_cache[path_str] = None
+    return stat_cache[path_str]
+
+def scan_directory_shallow_optimized(dirp: Path, extensions: list[str], exclude: list[str]) -> tuple[list[Node], int]:
     """
-    Scan a directory one level deep only.
-    Returns (child_nodes, total_slide_count)
+    Optimized directory scan using os.scandir which is more efficient than Path.iterdir()
+    for NFS as it makes fewer system calls.
     """
     children = []
     slide_count = 0
     
     try:
-        entries = list(dirp.iterdir())
-        entries.sort(key=lambda x: (x.is_file(), x.name.lower()))
-        
-        for entry_path in entries:
+        # os.scandir is more efficient as it gets stat info in one call
+        with os.scandir(dirp) as entries:
+            # Convert to list immediately to avoid keeping directory handle open
+            entry_list = list(entries)
+            
+        for entry in entry_list:
             try:
-                entry_name = entry_path.name
-                
-                if should_skip(entry_name, exclude):
+                if should_skip(entry.name, exclude):
                     continue
                 
-                if entry_path.is_dir():
-                    # For directories, just count slides in this dir (not recursive)
-                    dir_slide_count = count_slides_in_directory(entry_path, extensions, exclude, recursive=False)
-                    
-                    # Create a node with hasChildren flag but no actual children yet
+                # Use entry.is_dir() which uses cached stat from scandir
+                if entry.is_dir(follow_symlinks=False):
+                    # For directories, just check if it exists, don't count slides yet
                     child_node = Node(
-                        id=stable_id_from_path(entry_path),
-                        name=entry_name,
-                        path=str(entry_path),
+                        id=stable_id_from_path(Path(entry.path)),
+                        name=entry.name,
+                        path=entry.path,
                         is_dir=True,
-                        children=None,  # Will be loaded on demand
-                        slide_count=dir_slide_count,
-                        has_children=check_has_subdirs(entry_path, exclude)
+                        children=None,
+                        slide_count=-1,  # -1 indicates not counted yet
+                        has_children=None  # Will be determined on demand
                     )
-                    
                     children.append(child_node)
-                    slide_count += dir_slide_count
                     
-                elif entry_path.is_file():
-                    # Check if it's a slide file
-                    if entry_path.suffix.lower() in extensions:
-                        slide_count += 1
-                        
-            except (PermissionError, OSError) as e:
-                log.debug(f"Cannot access {entry_path}: {e}")
+                elif entry.is_file(follow_symlinks=False):
+                    # Only check extension, avoid full stat unless needed
+                    name_lower = entry.name.lower()
+                    for ext in extensions:
+                        if name_lower.endswith(ext):
+                            slide_count += 1
+                            break
+                            
+            except (PermissionError, OSError):
                 continue
                 
     except (PermissionError, OSError) as e:
-        log.warning(f"Cannot list directory {dirp}: {e}")
+        log.debug(f"Cannot list directory {dirp}: {e}")
     
     return children, slide_count
 
-def check_has_subdirs(dirp: Path, exclude: list[str]) -> bool:
-    """Quick check if a directory has any subdirectories."""
+def quick_has_children(dirp: Path, exclude: list[str]) -> bool | None:
+    """
+    Very quick check if directory has subdirectories.
+    Returns None if unknown (to avoid slow operations).
+    """
     try:
-        for entry in dirp.iterdir():
-            if entry.is_dir() and not should_skip(entry.name, exclude):
-                return True
-    except (PermissionError, OSError):
-        pass
-    return False
-
-def count_slides_in_directory(dirp: Path, extensions: list[str], exclude: list[str], recursive: bool = True) -> int:
-    """Count slide files in a directory (optionally recursive)."""
-    count = 0
-    
-    try:
-        if recursive:
-            for root, dirs, files in os.walk(dirp):
-                # Filter out excluded directories
-                dirs[:] = [d for d in dirs if not should_skip(d, exclude)]
-                
-                for file in files:
-                    if not should_skip(file, exclude):
-                        if Path(file).suffix.lower() in extensions:
-                            count += 1
-        else:
-            # Non-recursive: just count files in this directory
-            for entry in dirp.iterdir():
-                if entry.is_file() and not should_skip(entry.name, exclude):
-                    if entry.suffix.lower() in extensions:
-                        count += 1
-                        
-    except (PermissionError, OSError) as e:
-        log.debug(f"Cannot count slides in {dirp}: {e}")
-    
-    return count
-
-def build_tree_shallow(root_path: Path, extensions: list[str], exclude: list[str]) -> Node:
-    """Build only the top level of the tree."""
-    root_path = root_path.resolve()
-    
-    children, slide_count = scan_directory_shallow(root_path, extensions, exclude)
-    
-    # Sort children: directories with slides first, then by name
-    children.sort(key=lambda n: (n.slide_count == 0, n.name.lower()))
-    
-    return Node(
-        id=stable_id_from_path(root_path),
-        name=root_path.name or str(root_path),
-        path=str(root_path),
-        is_dir=True,
-        children=children,
-        slide_count=slide_count,
-        has_children=len(children) > 0
-    )
+        # Just check first few entries, don't scan everything
+        with os.scandir(dirp) as entries:
+            for i, entry in enumerate(entries):
+                if i > 10:  # Only check first 10 entries
+                    return True  # Assume it has children if many entries
+                if entry.is_dir(follow_symlinks=False) and not should_skip(entry.name, exclude):
+                    return True
+        return False
+    except:
+        return None
