@@ -10,7 +10,7 @@ class Node(BaseModel):
     is_dir: bool
     children: list["Node"] | None = None
     slide_count: int = 0
-    has_children: bool = False  # Add this flag for UI
+    has_children: bool = False  # Must be bool, not optional
 
 
 class SlideMeta(BaseModel):
@@ -26,4 +26,3 @@ class SlideMeta(BaseModel):
     mpp_y: float | None = None
     created_ts: float
     file_size: int | None = None
-
