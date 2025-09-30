@@ -58,7 +58,7 @@
     .list-container{flex:1;overflow-y:auto;background:#fff}
     .list{padding:8px}
     .list-item{display:flex;align-items:center;padding:10px 14px;border:1px solid var(--border);background:#fff;margin-bottom:4px;border-radius:8px;cursor:pointer;transition:all .15s}
-    .list-item:hover{background:var(--chip);transform:translateX(2px)}
+    .list-item:hover{background:#f0f2f6;transform:translateX(2px)}
     .list-thumb{width:60px;height:45px;background:#f1f5f9;border-radius:6px;margin-right:14px;overflow:hidden;flex-shrink:0;position:relative}
     .list-thumb img{width:100%;height:100%;object-fit:cover}
     .list-thumb .loading-spinner{position:absolute;inset:0;display:grid;place-items:center;background:rgba(255,255,255,0.9)}
@@ -218,7 +218,8 @@
                  :class="{loading: s.loading}"
                  @click="view(s.id)" 
                  :title="s.name"
-                 :data-slide-id="s.id">
+                 :data-slide-id="s.id"
+                 v-observe-visible>
               <div class="thumb">
                 <img v-if="s.thumbUrl" 
                      :src="s.thumbUrl" 
@@ -468,6 +469,25 @@ const Folder = {
     </div>`
 }
 
+// Custom directive to hook IntersectionObserver to grid cards
+const observeVisibleDirective = {
+  mounted(el, binding, vnode) {
+    const vm = binding.instance;
+    // Defer if observer not yet created
+    if (!vm.viewportObserver) {
+      vm._toObserve.push(el);
+      return;
+    }
+    vm.viewportObserver.observe(el);
+  },
+  unmounted(el, binding) {
+    const vm = binding.instance;
+    if (vm && vm.viewportObserver) {
+      vm.viewportObserver.unobserve(el);
+    }
+  }
+};
+
 // Main app
 const app = createApp({
   components:{ Folder },
@@ -506,14 +526,22 @@ const app = createApp({
       activeRequests:0,
       pendingRequests: new Map(),
       requestQueue: [],
-      maxConcurrentThumbs: 2, // Very conservative
+      maxConcurrentThumbs: 2, // kept for debug badge; not used after queueing
       loadingSlides: new Set(),
+      
+      // Thumbnail queue/concurrency control
+      thumbSlots: 4,
+      thumbInFlight: 0,
+      thumbQueue: [], // [{ slide, priority }]
       
       // Viewport tracking
       visibleRange:{start:0, end:0},
       lastScrollTime:0,
       scrollDebounceTimer:null,
-      viewportObserver:null
+      viewportObserver:null,
+
+      // Elements awaiting observer creation
+      _toObserve: []
     } 
   },
   
@@ -612,6 +640,8 @@ const app = createApp({
       this.requestQueue = [];
       this.loadingSlides.clear();
       this.activeRequests = 0;
+      // Also clear the queued thumbs
+      this.thumbQueue = [];
     },
     
     cancelRequestsOutsideViewport() {
@@ -634,52 +664,73 @@ const app = createApp({
       }
     },
 
-    // Thumbnail loading with strict viewport priority
-    async loadThumbnail(slide) {
-      if (slide.thumbUrl || slide.thumbError || this.loadingSlides.has(slide.id)) {
-        return;
+    // Blob URL cleanup
+    revokeThumb(slide){
+      if (slide && slide.thumbUrl) {
+        URL.revokeObjectURL(slide.thumbUrl);
+        slide.thumbUrl = null;
       }
-      
-      this.loadingSlides.add(slide.id);
-      slide.loading = true;
-      
-      const controller = new AbortController();
-      const requestId = `thumb-${slide.id}`;
-      
-      // Calculate priority based on viewport position
+    },
+
+    // Thumbnail loading with a queue + strict viewport priority
+    loadThumbnail(slide) {
+      if (!slide || slide.thumbUrl || slide.thumbError || this.loadingSlides.has(slide.id)) return;
+      // priority based on distance to viewport center
       const slideIndex = this.visibleSlides.indexOf(slide);
       const viewportCenter = (this.visibleRange.start + this.visibleRange.end) / 2;
       const distance = Math.abs(slideIndex - viewportCenter);
       const priority = Math.max(0, 1000 - distance * 10);
-      
+
+      // enqueue
+      this.thumbQueue.push({ slide, priority });
+      // highest priority first
+      this.thumbQueue.sort((a,b) => b.priority - a.priority);
+      this._drainThumbQueue();
+    },
+
+    async _drainThumbQueue() {
+      while (this.thumbInFlight < this.thumbSlots && this.thumbQueue.length) {
+        const { slide, priority } = this.thumbQueue.shift();
+        this._fetchThumb(slide, priority).catch(()=>{});
+      }
+    },
+
+    async _fetchThumb(slide, priority) {
+      if (!slide || slide.thumbUrl || slide.thumbError || this.loadingSlides.has(slide.id)) return;
+      this.loadingSlides.add(slide.id);
+      slide.loading = true;
+      this.thumbInFlight++;
+
+      const controller = new AbortController();
+      const requestId = `thumb-${slide.id}`;
       this.pendingRequests.set(requestId, {controller, priority, url: `/api/thumb/${slide.id}`});
       
       try {
-        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s timeout
-        
-        const response = await fetch(`/api/thumb/${slide.id}`, {
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+        const resp = await fetch(`/api/thumb/${slide.id}`, {
           signal: controller.signal,
-          headers: {'X-Priority': priority.toString()}
+          headers: {'X-Priority': String(priority)}
         });
-        
         clearTimeout(timeoutId);
-        
-        if (response.ok) {
-          const blob = await response.blob();
+
+        if (resp.ok) {
+          const blob = await resp.blob();
+          // Revoke old (should be none) then set
+          this.revokeThumb(slide);
           slide.thumbUrl = URL.createObjectURL(blob);
-          slide.loading = false;
         } else {
           slide.thumbError = true;
-          slide.loading = false;
         }
       } catch (e) {
         if (e.name !== 'AbortError') {
           slide.thumbError = true;
         }
-        slide.loading = false;
       } finally {
+        slide.loading = false;
         this.pendingRequests.delete(requestId);
         this.loadingSlides.delete(slide.id);
+        this.thumbInFlight--;
+        this._drainThumbQueue();
       }
     },
 
@@ -708,7 +759,7 @@ const app = createApp({
         // Cancel requests outside new viewport
         this.cancelRequestsOutsideViewport();
         
-        // Load only visible thumbnails
+        // Hint-load the currently visible thumbnails (IntersectionObserver will also trigger)
         for (let i = newStart; i < newEnd; i++) {
           const slide = this.visibleSlides[i];
           if (slide && !slide.thumbUrl && !slide.thumbError) {
@@ -755,6 +806,8 @@ const app = createApp({
     },
     
     selectDir(path){
+      // free blobs before switching
+      this.visibleSlides.forEach(s => this.revokeThumb(s));
       this.cancelAllRequests(); // Cancel everything when changing dirs
       this.selectedPath = path;
       this.openDir(path);
@@ -763,6 +816,8 @@ const app = createApp({
     async openDir(path){ 
       this.cancelAllRequests();
       this.current = null;
+      // free existing blobs and reset
+      this.visibleSlides.forEach(s => this.revokeThumb(s));
       this.visibleSlides = [];
       
       try {
@@ -783,6 +838,8 @@ const app = createApp({
     
     filterSlides(){
       this.cancelAllRequests();
+      // revoke previous page blobs
+      this.visibleSlides.forEach(s => this.revokeThumb(s));
       const term = this.slideSearch.toLowerCase();
       if(!term) {
         this.filteredSlides = [...this.slides];
@@ -797,7 +854,7 @@ const app = createApp({
     
     initializeView(){
       if(this.viewMode === 'grid') {
-        // Only prepare visible slides
+        // Prepare slides; thumbs loaded lazily via IO + queue
         this.visibleSlides = this.filteredSlides.map(s => ({
           ...s,
           loading: false,
@@ -807,6 +864,11 @@ const app = createApp({
         
         this.$nextTick(() => {
           this.updateViewport();
+          // Observe any elements that were created before observer existed
+          if (this.viewportObserver && this._toObserve.length) {
+            this._toObserve.forEach(el => this.viewportObserver.observe(el));
+            this._toObserve = [];
+          }
         });
       } else {
         // List view - load thumbnails for current page only
@@ -827,12 +889,16 @@ const app = createApp({
     },
     
     switchViewMode(mode){
+      // revoke existing blobs when switching
+      this.visibleSlides.forEach(s => this.revokeThumb(s));
       this.cancelAllRequests();
       this.viewMode = mode;
       this.initializeView();
     },
     
     goToPage(page){
+      // revoke blobs from current page
+      this.paginatedSlides.forEach(s => this.revokeThumb(s));
       this.cancelAllRequests();
       this.currentPage = page;
       this.initializeView();
@@ -840,7 +906,7 @@ const app = createApp({
 
     // Viewer methods
     async view(id){
-      // CRITICAL: Cancel all thumbnail requests when opening viewer
+      // Cancel thumbnails when opening viewer
       this.cancelAllRequests();
       this.current = id;
       
@@ -901,7 +967,8 @@ const app = createApp({
       if(document.fullscreenElement) {
         document.exitFullscreen();
       }
-      // Re-initialize grid view
+      // Revoke any existing blobs and re-init grid view
+      this.visibleSlides.forEach(s => this.revokeThumb(s));
       this.initializeView();
     },
     
@@ -971,8 +1038,8 @@ const app = createApp({
       this.cancelAllRequests();
     });
     
-    // Setup IntersectionObserver for even better performance (optional)
-    if ('IntersectionObserver' in window && this.viewMode === 'grid') {
+    // Setup IntersectionObserver for grid container
+    if ('IntersectionObserver' in window) {
       this.viewportObserver = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
           if (entry.isIntersecting) {
@@ -984,11 +1051,20 @@ const app = createApp({
           }
         });
       }, {
-        root: this.$refs.gridContainer,
-        rootMargin: '50px',
+        root: this.$refs.gridContainer || null,
+        rootMargin: '200px',
         threshold: 0.01
       });
+
+      // Observe any elements that were mounted before observer existed
+      if (this._toObserve.length) {
+        this._toObserve.forEach(el => this.viewportObserver.observe(el));
+        this._toObserve = [];
+      }
     }
+
+    // initial viewport compute
+    this.$nextTick(() => this.updateViewport());
   },
   
   beforeUnmount() {
@@ -996,8 +1072,11 @@ const app = createApp({
     if (this.viewportObserver) {
       this.viewportObserver.disconnect();
     }
+    // Revoke any allocated blobs
+    this.visibleSlides.forEach(s => this.revokeThumb(s));
   }
-})
+});
+app.directive('observe-visible', observeVisibleDirective);
 app.mount("#app")
 
 // Ruler function (same as before but with bottom positioning)
