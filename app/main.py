@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 import openslide
+from PIL import Image
 
 from .config import AppCfg
 from .cache import make_cache, Cache
@@ -47,6 +48,9 @@ tile_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TILES)
 
 # Request tracking for cancellation
 active_requests = {}
+
+# Set PIL Max Pixels to 500M
+Image.MAX_IMAGE_PIXELS = 500_000_000
 
 # --------------------------------------------------------------------------- #
 # Config
