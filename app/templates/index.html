@@ -151,7 +151,7 @@
 <div id="app" :class="modeClass">
   <header>
     <div class="brand">
-      <img v-if="logoUrl" :src="logoUrl" alt="Logo">
+      <img src="/logo" alt="Logo">
       <span class="brand-text">WSI Browser</span>
     </div>
     <div style="flex:1"></div>
@@ -1005,23 +1005,6 @@ const app = createApp({
     viewFullImage(url){
       window.open(url, '_blank');
     },
-    
-    async checkLogo(){
-      try {
-        const svgResp = await fetch('/static/logo.svg', {method: 'HEAD'})
-        if(svgResp.ok) {
-          this.logoUrl = '/static/logo.svg'
-          return
-        }
-      } catch(e) {}
-      
-      try {
-        const pngResp = await fetch('/static/logo.png', {method: 'HEAD'})
-        if(pngResp.ok) {
-          this.logoUrl = '/static/logo.png'
-        }
-      } catch(e) {}
-    }
   },
   
   mounted(){ 

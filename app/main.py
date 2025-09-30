@@ -54,6 +54,7 @@ default_path = Path(__file__).resolve().parent.parent / "config.yml"
 cfg_path_str = os.getenv("WSI_CONFIG", str(default_path))
 CFG_PATH = Path(cfg_path_str).resolve()
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 try:
     cfg = AppCfg.load(CFG_PATH)
@@ -602,13 +603,18 @@ async def api_associated_image(slide_id: str, image_name: str):
         log.exception("Failed to get associated image %s for %s: %s", image_name, p, e)
         raise HTTPException(500, "Failed to get associated image")
 
-@app.get("/static/{filename}")
-async def serve_static(filename: str):
-    static_path = TEMPLATES_DIR / filename
-    if filename in ["logo.svg", "logo.png"] and static_path.exists():
-        content_type = "image/svg+xml" if filename.endswith(".svg") else "image/png"
-        return Response(content=static_path.read_bytes(), media_type=content_type)
+@app.api_route("/logo", methods=["GET", "HEAD"])
+async def logo(request: Request):
+    for name, ctype in (("logo.svg", "image/svg+xml"), ("logo.png", "image/png")):
+        p = STATIC_DIR / name
+        if p.exists():
+            etag = f'W/"{hashlib.sha1(p.read_bytes()).hexdigest()}"'
+            headers = {"Cache-Control": "public, max-age=86400", "ETag": etag}
+            if request.method == "HEAD":
+                return Response(status_code=200, media_type=ctype, headers=headers)
+            return Response(content=p.read_bytes(), media_type=ctype, headers=headers)
     raise HTTPException(404, "File not found")
+
 
 # --------------------------------------------------------------------------- #
 # Deep-Zoom endpoints
