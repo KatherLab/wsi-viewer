@@ -1,7 +1,7 @@
 # Directories exposed to users in the UI
 roots:
   - path: "/path/to/slides"
-    label: "Core Biobank"
+    label: "Slides"
     
 exclude:
   - "__pycache__"

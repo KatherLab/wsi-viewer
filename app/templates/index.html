@@ -26,7 +26,7 @@
 
     .container{display:grid;grid-template-columns:290px 1fr;height:calc(100% - 54px)}
     aside{border-right:1px solid var(--border);overflow:auto;background:var(--chip)}
-    main{min-height:0;display:grid;position:relative}
+    main{min-height:0;display:flex;flex-direction:column;position:relative}
 
     /* Search */
     .search{padding:12px}
@@ -40,10 +40,37 @@
     .dir .right{display:flex;align-items:center;gap:8px}
     .children{padding-left:12px;border-left:1px dashed #cbd5e1;margin-left:6px}
 
-    /* Grid of slides */
-    .grid{padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;overflow:auto;border-bottom:1px solid var(--border);background:#fff}
+    /* Slide browser controls */
+    .browser-controls{padding:12px 14px;background:#fff;border-bottom:1px solid var(--border);display:flex;gap:12px;align-items:center}
+    .slide-search{flex:1;position:relative}
+    .slide-search input{width:100%;padding:8px 12px 8px 36px;border-radius:8px;border:1px solid var(--border);background:#fff;outline:none}
+    .slide-search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);opacity:0.5}
+    .view-toggle{display:flex;gap:4px;background:var(--chip);padding:4px;border-radius:8px}
+    .view-btn{padding:6px 10px;border:none;background:transparent;cursor:pointer;border-radius:6px;color:#6b7280;transition:all .15s}
+    .view-btn.active{background:#fff;color:#111827;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+    .slide-count{color:var(--muted);font-size:0.9rem}
+    
+    /* Grid view with virtual scrolling */
+    .grid-container{flex:1;overflow-y:auto;background:#fff;position:relative}
+    .grid{padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;position:relative}
+    
+    /* List view */
+    .list-container{flex:1;overflow-y:auto;background:#fff}
+    .list{padding:8px}
+    .list-item{display:flex;align-items:center;padding:10px 14px;border:1px solid var(--border);background:#fff;margin-bottom:4px;border-radius:8px;cursor:pointer;transition:all .15s}
+    .list-item:hover{background:var(--chip);transform:translateX(2px)}
+    .list-thumb{width:60px;height:45px;background:#f1f5f9;border-radius:6px;margin-right:14px;overflow:hidden;flex-shrink:0}
+    .list-thumb img{width:100%;height:100%;object-fit:cover}
+    .list-info{flex:1;min-width:0}
+    .list-name{font-weight:500;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .list-meta{display:flex;gap:12px;margin-top:4px;font-size:0.85rem;color:var(--muted)}
+    .list-ext{background:#eef2ff;color:#1e3a8a;padding:2px 6px;border-radius:4px;font-size:0.75rem}
+
+    /* Card styles */
     .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;overflow:hidden;box-shadow:var(--shadow);transition:transform .12s, box-shadow .12s}
     .card:hover{transform:translateY(-1px);box-shadow:0 10px 28px rgba(0,0,0,.08)}
+    .card.loading{animation:pulse 1.5s ease-in-out infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
     .thumb{width:100%;height:180px;background:#f1f5f9;display:grid;place-items:center;position:relative;overflow:hidden}
     .thumb img{width:100%;height:100%;object-fit:contain;background:#fff}
     .thumb .fallback{position:absolute;inset:0;display:grid;place-items:center}
@@ -52,6 +79,14 @@
     .filename{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
     .filesize{color:var(--muted);font-size:0.85rem}
     .ext-pill{font-size:.72rem;background:#eef2ff;color:#1e3a8a;padding:2px 8px;border-radius:999px;border:1px solid #c7d2fe}
+
+    /* Pagination */
+    .pagination{padding:12px 14px;background:#fff;border-top:1px solid var(--border);display:flex;justify-content:center;align-items:center;gap:8px}
+    .page-btn{padding:6px 12px;border:1px solid var(--border);background:#fff;border-radius:6px;cursor:pointer;transition:all .15s;min-width:36px;text-align:center}
+    .page-btn:hover:not(:disabled){background:var(--chip)}
+    .page-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .page-btn:disabled{opacity:0.5;cursor:not-allowed}
+    .page-info{color:var(--muted);padding:0 12px}
 
     /* Viewer */
     #viewer{position:relative;background:#fff;min-height:0;display:grid;grid-template-columns:1fr 320px}
@@ -123,38 +158,135 @@
       </div>
     </aside>
 
-    <!-- RIGHT: either Grid OR Viewer -->
+    <!-- RIGHT: either Grid/List OR Viewer -->
     <main>
-      <!-- Grid -->
-      <section class="grid" v-if="!current">
-        <div v-for="s in slides" :key="s.id" class="card" @click="view(s.id)" :title="s.name">
-          <div class="thumb">
-            <img v-if="!s.thumbError" :src="`/api/thumb/${s.id}`" alt="preview" @error="onThumbError(s)"/>
-            <div v-else class="fallback" aria-hidden="true">
-              <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:.6">
-                <rect x="3" y="3" width="18" height="14" rx="2" ry="2"></rect>
-                <circle cx="8.5" cy="8.5" r="1.5"></circle>
-                <path d="M21 20l-5.5-5.5a2 2 0 0 0-2.8 0L3 20"></path>
-              </svg>
-            </div>
+      <template v-if="!current">
+        <!-- Browser controls -->
+        <div class="browser-controls">
+          <div class="slide-search">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"></circle>
+              <path d="m21 21-4.35-4.35"></path>
+            </svg>
+            <input v-model="slideSearch" placeholder="Search slides..." @input="filterSlides">
           </div>
-          <div class="meta">
-            <div class="meta-row">
-              <span class="filename" :title="s.name">{{ baseName(s.name) }}</span>
-              <span class="ext-pill">{{ extUpper(s.name) }}</span>
-            </div>
-            <div class="meta-row">
-              <span class="filesize">{{ prettySize(s.size) }}</span>
+          
+          <div class="view-toggle">
+            <button class="view-btn" :class="{active: viewMode === 'grid'}" @click="viewMode = 'grid'">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="7" height="7"></rect>
+                <rect x="14" y="3" width="7" height="7"></rect>
+                <rect x="3" y="14" width="7" height="7"></rect>
+                <rect x="14" y="14" width="7" height="7"></rect>
+              </svg>
+            </button>
+            <button class="view-btn" :class="{active: viewMode === 'list'}" @click="viewMode = 'list'">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="8" y1="6" x2="21" y2="6"></line>
+                <line x1="8" y1="12" x2="21" y2="12"></line>
+                <line x1="8" y1="18" x2="21" y2="18"></line>
+                <line x1="3" y1="6" x2="3.01" y2="6"></line>
+                <line x1="3" y1="12" x2="3.01" y2="12"></line>
+                <line x1="3" y1="18" x2="3.01" y2="18"></line>
+              </svg>
+            </button>
+          </div>
+          
+          <div class="slide-count">
+            {{ filteredSlides.length }} slides
+            <span v-if="slideSearch">(filtered)</span>
+          </div>
+        </div>
+
+        <!-- Grid view -->
+        <div v-if="viewMode === 'grid'" class="grid-container" @scroll="handleScroll" ref="gridContainer">
+          <div class="grid">
+            <div v-for="(s, idx) in visibleSlides" 
+                 :key="s.id" 
+                 class="card" 
+                 :class="{loading: !s.loaded}"
+                 @click="view(s.id)" 
+                 :title="s.name">
+              <div class="thumb">
+                <img v-if="!s.thumbError && s.loaded" 
+                     :src="`/api/thumb/${s.id}`" 
+                     alt="preview" 
+                     @error="onThumbError(s)"
+                     @load="s.thumbLoaded = true"/>
+                <div v-else class="fallback" aria-hidden="true">
+                  <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.6">
+                    <rect x="3" y="3" width="18" height="14" rx="2" ry="2"></rect>
+                    <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                    <path d="M21 20l-5.5-5.5a2 2 0 0 0-2.8 0L3 20"></path>
+                  </svg>
+                </div>
+              </div>
+              <div class="meta">
+                <div class="meta-row">
+                  <span class="filename" :title="s.name">{{ baseName(s.name) }}</span>
+                  <span class="ext-pill">{{ extUpper(s.name) }}</span>
+                </div>
+                <div class="meta-row">
+                  <span class="filesize">{{ prettySize(s.size) }}</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-        <div v-if="!slides.length" class="empty">
+
+        <!-- List view -->
+        <div v-if="viewMode === 'list'" class="list-container">
+          <div class="list">
+            <div v-for="s in paginatedSlides" 
+                 :key="s.id" 
+                 class="list-item" 
+                 @click="view(s.id)">
+              <div class="list-thumb">
+                <img v-if="!s.thumbError" 
+                     :src="`/api/thumb/${s.id}`" 
+                     alt="preview" 
+                     @error="onThumbError(s)"/>
+              </div>
+              <div class="list-info">
+                <div class="list-name" :title="s.name">{{ s.name }}</div>
+                <div class="list-meta">
+                  <span>{{ prettySize(s.size) }}</span>
+                  <span>{{ formatDate(s.mtime) }}</span>
+                  <span class="list-ext">{{ extUpper(s.name) }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pagination for list view -->
+        <div v-if="viewMode === 'list' && totalPages > 1" class="pagination">
+          <button class="page-btn" @click="currentPage = 1" :disabled="currentPage === 1">«</button>
+          <button class="page-btn" @click="currentPage--" :disabled="currentPage === 1">‹</button>
+          
+          <template v-for="p in pageNumbers">
+            <button v-if="p !== '...'" 
+                    class="page-btn" 
+                    :class="{active: p === currentPage}"
+                    @click="currentPage = p">{{ p }}</button>
+            <span v-else class="page-info">...</span>
+          </template>
+          
+          <button class="page-btn" @click="currentPage++" :disabled="currentPage === totalPages">›</button>
+          <button class="page-btn" @click="currentPage = totalPages" :disabled="currentPage === totalPages">»</button>
+          
+          <span class="page-info">Page {{ currentPage }} of {{ totalPages }}</span>
+        </div>
+
+        <!-- Empty state -->
+        <div v-if="!filteredSlides.length" class="empty">
           <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.4">
             <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
           </svg>
-          <span>Select a folder containing slides</span>
+          <span v-if="!slides.length">Select a folder containing slides</span>
+          <span v-else>No slides match your search</span>
         </div>
-      </section>
+      </template>
 
       <!-- Viewer -->
       <section id="viewer" v-else :class="{'no-sidebar': !showSidebar}">
@@ -178,16 +310,16 @@
           </button>
 
           <div class="toolbar" v-if="osd">
-            <button class="tb-btn" @click="osd.viewport.zoomBy(1/1.2)" title="Zoom out" aria-label="Zoom out">−</button>
-            <button class="tb-btn" @click="osd.viewport.zoomBy(1.2)" title="Zoom in" aria-label="Zoom in">+</button>
-            <div class="tb-sep" aria-hidden="true"></div>
-            <button class="tb-btn" @click="resetView" title="Reset view" aria-label="Reset">
+            <button class="tb-btn" @click="osd.viewport.zoomBy(1/1.2)" title="Zoom out">−</button>
+            <button class="tb-btn" @click="osd.viewport.zoomBy(1.2)" title="Zoom in">+</button>
+            <div class="tb-sep"></div>
+            <button class="tb-btn" @click="resetView" title="Reset view">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v6h6"/></svg>
             </button>
-            <button class="tb-btn" @click="fitWidth" title="Fit to width" aria-label="Fit to width">
+            <button class="tb-btn" @click="fitWidth" title="Fit to width">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18"/><path d="M8 3l-4 4 4 4"/><path d="M16 3l4 4-4 4"/></svg>
             </button>
-            <div class="tb-sep" aria-hidden="true"></div>
+            <div class="tb-sep"></div>
             <button class="tb-btn" @click="toggleFS" :title="isFullscreen ? 'Exit fullscreen' : 'Full screen'">
               <svg v-if="!isFullscreen" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/>
@@ -250,7 +382,7 @@
 <script>
 const { createApp } = Vue;
 
-/* Folder tree component - recursive */
+/* Folder tree component - with on-demand loading */
 /* Folder tree component - with on-demand loading */
 const Folder = {  
   name: 'Folder',
@@ -291,11 +423,18 @@ const Folder = {
       return this.node.has_children || (this.node.children && this.node.children.length > 0);
     },
     children() {
-      // Use local children if loaded, otherwise use node.children if available
       return this.localChildren || this.node.children || [];
     },
     isSelected(){ 
       return this.selectedPath === this.node.path;
+    },
+    slideCountText() {
+      // Don't show anything if count is 0 or unknown (not loaded yet)
+      if (!this.node.slide_count || this.node.slide_count === 0) {
+        return '';
+      }
+      // Use singular for 1 slide, plural for multiple
+      return this.node.slide_count === 1 ? '1 slide' : `${this.node.slide_count} slides`;
     }
   },
   template:`
@@ -303,7 +442,7 @@ const Folder = {
       <div class="dir" @click="toggle" :aria-expanded="open" :class="{selected: isSelected}">
         <div>
           <strong>{{ node.name }}</strong>
-          <small style="color:var(--muted)"> · {{ node.slide_count }} slides</small>
+          <small v-if="slideCountText" style="color:var(--muted)"> · {{ slideCountText }}</small>
           <span v-if="loading" style="margin-left:8px;color:var(--muted)">(loading...)</span>
         </div>
         <div class="right">
@@ -324,7 +463,13 @@ const app = createApp({
     return { 
       trees:[], 
       q:"", 
-      slides:[], 
+      slides:[],
+      filteredSlides:[],
+      visibleSlides:[],
+      slideSearch:"",
+      viewMode:'grid',
+      currentPage:1,
+      itemsPerPage:50,
       osd:null, 
       current:null, 
       mpp:0.25, 
@@ -334,7 +479,10 @@ const app = createApp({
       associatedImages:[],
       selectedPath:null,
       isFullscreen:false,
-      logoUrl:null
+      logoUrl:null,
+      scrollTop:0,
+      itemHeight:280,
+      visibleRange:{start:0, end:50}
     } 
   },
   computed:{
@@ -345,7 +493,40 @@ const app = createApp({
       const clone = (n)=> ({...n, children:(n.children||[]).map(clone).filter(match)})
       return this.trees.map(clone).filter(match)
     },
-    modeClass(){ return this.current ? 'mode-viewer' : 'mode-grid' }
+    modeClass(){ return this.current ? 'mode-viewer' : 'mode-grid' },
+    paginatedSlides(){
+      const start = (this.currentPage - 1) * this.itemsPerPage;
+      return this.filteredSlides.slice(start, start + this.itemsPerPage);
+    },
+    totalPages(){
+      return Math.ceil(this.filteredSlides.length / this.itemsPerPage);
+    },
+        pageNumbers(){
+      const pages = [];
+      const total = this.totalPages;
+      const current = this.currentPage;
+      
+      if(total <= 7) {
+        for(let i = 1; i <= total; i++) pages.push(i);
+      } else {
+        if(current <= 3) {
+          for(let i = 1; i <= 5; i++) pages.push(i);
+          pages.push('...');
+          pages.push(total);
+        } else if(current >= total - 2) {
+          pages.push(1);
+          pages.push('...');
+          for(let i = total - 4; i <= total; i++) pages.push(i);
+        } else {
+          pages.push(1);
+          pages.push('...');
+          for(let i = current - 1; i <= current + 1; i++) pages.push(i);
+          pages.push('...');
+          pages.push(total);
+        }
+      }
+      return pages;
+    }
   },
   methods:{
     prettySize(b){ 
@@ -358,9 +539,13 @@ const app = createApp({
     baseName(name){ const i=name.lastIndexOf("."); return i>0 ? name.slice(0,i) : name },
     extName(name){ const i=name.lastIndexOf("."); return i>0 ? name.slice(i+1) : "" },
     extUpper(name){ return this.extName(name).toUpperCase() },
+    formatDate(ts){ 
+      if(!ts) return "";
+      const d = new Date(ts * 1000);
+      return d.toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'});
+    },
 
     async checkLogo(){
-      // Check for logo.svg first, then logo.png
       try {
         const svgResp = await fetch('/static/logo.svg', {method: 'HEAD'})
         if(svgResp.ok) {
@@ -387,11 +572,113 @@ const app = createApp({
     },
     
     async openDir(path){ 
-      this.current=null; 
-      this.slides = await (await fetch("/api/dir?" + new URLSearchParams({path}))).json() 
+      this.current = null;
+      this.slides = await (await fetch("/api/dir?" + new URLSearchParams({path}))).json();
+      this.filteredSlides = [...this.slides];
+      this.currentPage = 1;
+      this.slideSearch = "";
+      
+      // Initialize lazy loading for grid view
+      this.initializeLazyLoading();
     },
     
-    onThumbError(s){ s.thumbError = true },
+    filterSlides(){
+      const term = this.slideSearch.toLowerCase();
+      if(!term) {
+        this.filteredSlides = [...this.slides];
+      } else {
+        this.filteredSlides = this.slides.filter(s => 
+          s.name.toLowerCase().includes(term)
+        );
+      }
+      this.currentPage = 1;
+      this.initializeLazyLoading();
+    },
+    
+    initializeLazyLoading(){
+      // For grid view, prepare visible slides with loading states
+      if(this.viewMode === 'grid') {
+        this.visibleSlides = this.filteredSlides.slice(0, 50).map(s => ({
+          ...s,
+          loaded: false,
+          thumbLoaded: false
+        }));
+        
+        // Start loading first batch
+        this.$nextTick(() => {
+          this.loadVisibleThumbnails();
+        });
+      }
+    },
+    
+    handleScroll(event){
+      if(this.viewMode !== 'grid') return;
+      
+      const container = event.target;
+      const scrollTop = container.scrollTop;
+      const scrollHeight = container.scrollHeight;
+      const clientHeight = container.clientHeight;
+      
+      // Load more items when near bottom
+      if(scrollTop + clientHeight > scrollHeight - 200) {
+        this.loadMoreSlides();
+      }
+      
+      // Update visible thumbnails based on scroll position
+      this.updateVisibleThumbnails(scrollTop, clientHeight);
+    },
+    
+    loadMoreSlides(){
+      const currentCount = this.visibleSlides.length;
+      const nextBatch = this.filteredSlides.slice(currentCount, currentCount + 50);
+      
+      if(nextBatch.length > 0) {
+        const newSlides = nextBatch.map(s => ({
+          ...s,
+          loaded: false,
+          thumbLoaded: false
+        }));
+        
+        this.visibleSlides.push(...newSlides);
+        
+        this.$nextTick(() => {
+          this.loadVisibleThumbnails();
+        });
+      }
+    },
+    
+    updateVisibleThumbnails(scrollTop, clientHeight){
+      // Calculate which items are visible
+      const itemsPerRow = Math.floor(this.$refs.gridContainer?.clientWidth / 260) || 4;
+      const rowHeight = 280;
+      const firstVisibleRow = Math.floor(scrollTop / rowHeight);
+      const lastVisibleRow = Math.ceil((scrollTop + clientHeight) / rowHeight);
+      
+      const firstIndex = firstVisibleRow * itemsPerRow;
+      const lastIndex = Math.min(lastVisibleRow * itemsPerRow, this.visibleSlides.length);
+      
+      // Mark items in viewport for loading
+      for(let i = firstIndex; i < lastIndex; i++) {
+        if(this.visibleSlides[i] && !this.visibleSlides[i].loaded) {
+          this.visibleSlides[i].loaded = true;
+        }
+      }
+    },
+    
+    loadVisibleThumbnails(){
+      // Load thumbnails for all currently marked as visible
+      const container = this.$refs.gridContainer;
+      if(!container) return;
+      
+      const scrollTop = container.scrollTop;
+      const clientHeight = container.clientHeight;
+      this.updateVisibleThumbnails(scrollTop, clientHeight);
+    },
+    
+    onThumbError(s){ 
+      s.thumbError = true;
+      s.thumbLoaded = true;
+    },
 
     async view(id){
       this.current = id
@@ -427,7 +714,13 @@ const app = createApp({
         visibilityRatio:1,
         minZoomLevel:0.001,
         maxZoomLevel:40,
-        background:"#ffffff"
+        background:"#ffffff",
+        gestureSettingsMouse: {
+          scrollToZoom: true,
+          clickToZoom: true,
+          dblClickToZoom: true,
+          pinchToZoom: true
+        }
       })
       this.$nextTick(()=>{ attachRuler(this.osd, this.mpp) })
     },
@@ -478,6 +771,13 @@ const app = createApp({
       window.open(url, '_blank')
     }
   },
+  watch: {
+    viewMode(newMode) {
+      if(newMode === 'grid') {
+        this.initializeLazyLoading();
+      }
+    }
+  },
   mounted(){ 
     this.loadTrees();
     this.checkLogo();
@@ -525,12 +825,17 @@ function attachRuler(viewer, mppX){
     const bl=item.imageToViewportCoordinates(new OpenSeadragon.Point(0,size.y))
     const blPx=vp.pixelFromPoint(bl,true)
     
-    // Add padding from left edge and keep above toolbar
-    const leftPad=30*DPR;
-    const bottomPad=80*DPR;
-    let x0=blPx.x*DPR+leftPad, y0=blPx.y*DPR-bottomPad
-    x0=Math.max(leftPad,Math.min(x0,canvas.width-140*DPR)); 
-    y0=Math.max(40*DPR,Math.min(y0,canvas.height-bottomPad))
+    // Position in bottom-left with proper padding
+    const leftPad = 30*DPR;  // Distance from left edge
+    const bottomPad = 100*DPR;  // Distance from bottom (above toolbar which is ~70px)
+    
+    // Calculate position - start from canvas bottom, move up by bottomPad
+    let x0 = leftPad;
+    let y0 = canvas.height - bottomPad;
+    
+    // Ensure ruler stays within bounds
+    x0 = Math.max(leftPad, Math.min(x0, canvas.width - 200*DPR)); 
+    y0 = Math.max(100*DPR, Math.min(y0, canvas.height - bottomPad));
 
     // background pill
     ctx.save()
@@ -558,6 +863,8 @@ function attachRuler(viewer, mppX){
     ctx.moveTo(x0,yRule); 
     ctx.lineTo(x0+barPx,yRule); 
     ctx.stroke()
+    
+    // End caps
     ctx.lineWidth=6*DPR; 
     ctx.beginPath(); 
     ctx.moveTo(x0,yRule); 
@@ -567,6 +874,8 @@ function attachRuler(viewer, mppX){
     ctx.moveTo(x0+barPx,yRule); 
     ctx.lineTo(x0+barPx,yRule); 
     ctx.stroke()
+    
+    // Label text
     ctx.fillStyle="#111827"; 
     ctx.font=`${12*DPR}px system-ui,-apple-system,Segoe UI,Roboto,Arial`; 
     ctx.textBaseline='bottom'
@@ -582,7 +891,9 @@ function attachRuler(viewer, mppX){
   
   return { resize, redraw }
 }
+
 </script>
 </body>
 </html>
 {% endraw %}
+
