@@ -40,8 +40,8 @@ logging.basicConfig(level=logging.INFO)
 executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="wsi-io")
 
 # Connection limits for concurrent requests
-MAX_CONCURRENT_THUMBNAILS = 4
-MAX_CONCURRENT_TILES = 8
+MAX_CONCURRENT_THUMBNAILS = 8
+MAX_CONCURRENT_TILES = 12
 thumb_semaphore = asyncio.Semaphore(MAX_CONCURRENT_THUMBNAILS)
 tile_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TILES)
 

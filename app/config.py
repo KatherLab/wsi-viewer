@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings
 import yaml
 
 
-DEFAULT_EXTS = [".svs", ".tif", ".tiff", ".ndpi", ".scn", ".mrxs", ".bif"]
+DEFAULT_EXTS = [".svs", ".tif", ".tiff", ".ndpi", ".scn", ".mrxs", ".bif", ".czi", ".dcm", ".vms", ".vmu", ".svslide"]
 
 
 class CacheCfg(BaseModel):

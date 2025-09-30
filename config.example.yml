@@ -17,6 +17,11 @@ extensions:
   - ".scn"
   - ".mrxs"
   - ".bif"
+  - ".czi"
+  - ".dcm"
+  - ".vms"
+  - ".vmu" 
+  - ".svslide"
 
 cache:
   enabled: true
