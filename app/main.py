@@ -4,11 +4,10 @@ import os
 import json
 import asyncio
 import time
+import pickle
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from functools import lru_cache
-import pickle
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,7 +20,7 @@ import io
 
 from .config import AppCfg
 from .cache import make_cache, Cache
-from .fs_index import scan_directory_shallow_optimized, stable_id_from_path
+from .fs_index import scan_directory_shallow_optimized, stable_id_from_path, build_tree_shallow
 from .thumbs import make_preview_bytes
 from .dz import DZ
 from .models import SlideMeta, Node
@@ -33,11 +32,11 @@ logging.basicConfig(level=logging.INFO)
 
 # --------------------------------------------------------------------------- #
 # Thread pool for blocking I/O operations
-executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="wsi-io")
+executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="wsi-io")
 
 # Connection limits for concurrent requests
-MAX_CONCURRENT_THUMBNAILS = 3
-MAX_CONCURRENT_TILES = 6
+MAX_CONCURRENT_THUMBNAILS = 4
+MAX_CONCURRENT_TILES = 8
 thumb_semaphore = asyncio.Semaphore(MAX_CONCURRENT_THUMBNAILS)
 tile_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TILES)
 
@@ -137,21 +136,6 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 ROOTS = {str(Path(r.path).resolve()): r.label for r in cfg.roots}
 EXTS = set([e.lower() for e in cfg.extensions])
 
-def resolve_by_id_fast(slide_id: str) -> Path:
-    """Fast path resolution using cache."""
-    # Check memory cache first
-    if slide_id in path_cache:
-        p = Path(path_cache[slide_id])
-        if p.exists():
-            return p
-        else:
-            # Cached path no longer exists
-            del path_cache[slide_id]
-    
-    # Not in cache - we need to find it (this will be slow the first time)
-    # But we'll cache it for future use
-    raise FileNotFoundError(f"Slide id not found in cache: {slide_id}")
-
 def resolve_by_id_with_fallback(slide_id: str) -> Path:
     """Fast path resolution using cache with fallback to slow search."""
     # Check memory cache first
@@ -163,18 +147,38 @@ def resolve_by_id_with_fallback(slide_id: str) -> Path:
             # Cached path no longer exists
             del path_cache[slide_id]
     
-    # Not in cache - do a slow search and cache it
+    # Not in cache - do a targeted search in likely locations first
+    # This is still slow but necessary for first access
     log.info(f"Cache miss for {slide_id}, searching...")
+    
+    # Do a breadth-first search to find files faster
     for base in ROOTS.keys():
+        base_path = Path(base)
+        # First check if we've seen this file recently in any cached directories
+        for cached_id, cached_path in list(path_cache.items()):
+            cached_dir = Path(cached_path).parent
+            if str(cached_dir).startswith(base):
+                # Check this directory for our file
+                try:
+                    for f in cached_dir.iterdir():
+                        if f.is_file() and f.suffix.lower() in EXTS:
+                            file_id = stable_id_from_path(f)
+                            path_cache[file_id] = str(f)
+                            if file_id == slide_id:
+                                save_path_cache()
+                                return f
+                except:
+                    pass
+        
+        # Fall back to full search
         for root, _, files in os.walk(base):
             for f in files:
                 p = Path(root) / f
                 if p.suffix.lower() in EXTS:
                     file_id = stable_id_from_path(p)
-                    # Cache this and any other files we find
                     path_cache[file_id] = str(p)
                     if file_id == slide_id:
-                        save_path_cache()  # Save immediately for important finds
+                        save_path_cache()
                         return p
     
     raise FileNotFoundError(f"Slide id not found: {slide_id}")
@@ -400,7 +404,6 @@ async def api_dir(path: str, request: Request):
         log.exception("Listing failed for %s: %s", path, e)
         raise HTTPException(500, "Failed to list directory")
 
-# For all endpoints that need to resolve slides, use the fast cached version
 @app.get("/api/thumb/{slide_id}")
 async def api_thumb(slide_id: str, request: Request):
     priority = int(request.headers.get("X-Priority", "0"))
@@ -425,12 +428,9 @@ async def api_thumb(slide_id: str, request: Request):
             raise HTTPException(499, "Client closed request")
             
         try:
-            # Use fast cached resolution
-            p = resolve_by_id_fast(slide_id)
+            p = resolve_by_id_with_fallback(slide_id)
         except FileNotFoundError:
-            # If not in cache, return 404 immediately
-            # The slide will be cached when its directory is listed
-            raise HTTPException(404, "Slide not found - please navigate to its directory first")
+            raise HTTPException(404, "Slide not found")
             
         try:
             timeout = 10 if priority > 500 else 15
@@ -459,9 +459,9 @@ async def api_thumb(slide_id: str, request: Request):
 @app.get("/api/meta/{slide_id}")
 async def api_meta(slide_id: str):
     try:
-        p = resolve_by_id_fast(slide_id)
+        p = resolve_by_id_with_fallback(slide_id)
     except FileNotFoundError:
-        raise HTTPException(404, "Slide not found - please navigate to its directory first")
+        raise HTTPException(404, "Slide not found")
         
     def get_metadata():
         slide = openslide.open_slide(str(p))
@@ -506,9 +506,9 @@ async def api_meta(slide_id: str):
 @app.get("/api/associated/{slide_id}")
 async def api_associated_list(slide_id: str):
     try:
-        p = resolve_by_id_fast(slide_id)
+        p = resolve_by_id_with_fallback(slide_id)
     except FileNotFoundError:
-        raise HTTPException(404, "Slide not found - please navigate to its directory first")
+        raise HTTPException(404, "Slide not found")
         
     def get_associated():
         slide = openslide.open_slide(str(p))
@@ -535,7 +535,6 @@ async def api_associated_image(slide_id: str, image_name: str):
         slide = openslide.open_slide(str(p))
         try:
             if image_name not in slide.associated_images:
-                # This is not an error - just return 404
                 return None
                 
             img = slide.associated_images[image_name]
@@ -560,7 +559,6 @@ async def api_associated_image(slide_id: str, image_name: str):
         log.exception("Failed to get associated image %s for %s: %s", image_name, p, e)
         raise HTTPException(500, "Failed to get associated image")
 
-
 @app.get("/static/{filename}")
 async def serve_static(filename: str):
     static_path = TEMPLATES_DIR / filename
@@ -569,12 +567,14 @@ async def serve_static(filename: str):
         return Response(content=static_path.read_bytes(), media_type=content_type)
     raise HTTPException(404, "File not found")
 
+# --------------------------------------------------------------------------- #
+# Deep‑Zoom endpoints
 @app.get("/dzi/{slide_id}.dzi")
 async def dzi_xml(slide_id: str):
     try:
-        p = resolve_by_id_fast(slide_id)
+        p = resolve_by_id_with_fallback(slide_id)
     except FileNotFoundError:
-        raise HTTPException(404, "Slide not found - please navigate to its directory first")
+        raise HTTPException(404, "Slide not found")
         
     def get_dzi():
         s = openslide.open_slide(str(p))
@@ -616,9 +616,9 @@ async def dzi_tile(slide_id: str, level: int, x: int, y: int, request: Request):
             raise HTTPException(499, "Client closed request")
             
         try:
-            p = resolve_by_id_fast(slide_id)
+            p = resolve_by_id_with_fallback(slide_id)
         except FileNotFoundError:
-            raise HTTPException(404, "Slide not found - please navigate to its directory first")
+            raise HTTPException(404, "Slide not found")
             
         def get_tile():
             s = openslide.open_slide(str(p))
@@ -626,7 +626,14 @@ async def dzi_tile(slide_id: str, level: int, x: int, y: int, request: Request):
                 dz = DZ(s)
                 if level < 0 or level >= dz.dz.level_count:
                     raise HTTPException(404, "Invalid level")
-                return dz.tile_jpeg(level, x, y)
+                
+                # This may raise an exception for out-of-bounds tiles, which is normal
+                try:
+                    return dz.tile_jpeg(level, x, y)
+                except Exception as e:
+                    # This is expected for tiles outside the image bounds
+                    # OpenSeadragon will handle 404s gracefully
+                    raise HTTPException(404, f"Tile not found at level {level}, ({x},{y})")
             finally:
                 s.close()
                 
@@ -649,14 +656,19 @@ async def dzi_tile(slide_id: str, level: int, x: int, y: int, request: Request):
         except HTTPException:
             raise
         except Exception as e:
-            log.exception("Tile generation failed for %s level %s (%s,%s): %s", slide_id, level, x, y, e)
+            # Don't log errors for expected 404s on tile boundaries
+            if "Tile not found" not in str(e):
+                log.exception("Tile generation failed for %s level %s (%s,%s): %s", slide_id, level, x, y, e)
             raise HTTPException(500, "Failed to generate tile")
 
+# --------------------------------------------------------------------------- #
 @app.get("/health")
 async def health():
+    """Health check endpoint for Docker."""
     return {"status": "healthy", "service": "wsi-browser"}
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    """Clean up on shutdown."""
     save_path_cache()
     executor.shutdown(wait=False, cancel_futures=True)
