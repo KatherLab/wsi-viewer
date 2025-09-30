@@ -305,7 +305,7 @@
       <section id="viewer" v-else :class="{'no-sidebar': !showSidebar}">
         <div id="osd-container">
           <div id="osd" aria-label="Slide viewer"></div>
-          <canvas id="ruler" class="overlay"></canvas>
+          <canvas id="ruler" class="overlay" v-show="hasScale"></canvas>
           
           <!-- Back button -->
           <button class="back-btn" @click="closeViewer" title="Back to grid" aria-label="Back to grid">
@@ -512,7 +512,8 @@ const app = createApp({
       // Viewer
       osd:null, 
       current:null, 
-      mpp:0.25, 
+      mpp:null,
+      hasScale:false, 
       showSidebar:true,
       slideMeta:null,
       associatedImages:[],
@@ -914,11 +915,18 @@ const app = createApp({
         const metaResp = await this.makeRequest("/api/meta/" + id, 1000); // High priority
         if (metaResp.ok) {
           this.slideMeta = await metaResp.json();
-          this.mpp = this.slideMeta.mpp_x || 0.25;
+          this.hasScale = Number.isFinite(this.slideMeta?.mpp_x) && this.slideMeta.mpp_x > 0;
+          this.mpp = this.hasScale ? this.slideMeta.mpp_x : null;
+        } else {
+          this.hasScale = false;
+          this.mpp = null;
         }
       } catch (e) {
         console.error('Failed to load metadata:', e);
+        this.hasScale = false;
+        this.mpp = null;
       }
+
       
       this.associatedImages = [];
       
@@ -950,11 +958,25 @@ const app = createApp({
         minZoomLevel:0.001,
         maxZoomLevel:40,
         background:"#ffffff",
-        // Limit tile requests
         maxImageCacheCount: 100,
         imageLoaderLimit: 4
       });
-      this.$nextTick(()=>{ attachRuler(this.osd, this.mpp) });
+
+      // Attach the ruler only if slide scale is known
+      this.$nextTick(() => {
+        const canvas = document.getElementById('ruler');
+        if (this.hasScale && this.mpp) {
+          canvas && (canvas.style.display = '');
+          attachRuler(this.osd, this.mpp);
+        } else {
+          // ensure overlay is cleared/hidden if no reliable scale
+          if (canvas) {
+            const ctx = canvas.getContext('2d');
+            ctx && ctx.clearRect(0,0,canvas.width,canvas.height);
+            canvas.style.display = 'none';
+          }
+        }
+      });
     },
     
     closeViewer(){ 
@@ -963,6 +985,17 @@ const app = createApp({
       this.current=null;
       this.slideMeta=null;
       this.associatedImages=[];
+      this.hasScale = false;   // reset
+      this.mpp = null;         // reset
+
+      // clear and hide ruler canvas
+      const canvas = document.getElementById('ruler');
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        ctx && ctx.clearRect(0,0,canvas.width,canvas.height);
+        canvas.style.display = 'none';
+      }
+
       this.isFullscreen = false;
       if(document.fullscreenElement) {
         document.exitFullscreen();
@@ -971,6 +1004,7 @@ const app = createApp({
       this.visibleSlides.forEach(s => this.revokeThumb(s));
       this.initializeView();
     },
+
     
     resetView(){ 
       if(!this.osd) return; 
@@ -1062,97 +1096,169 @@ const app = createApp({
 app.directive('observe-visible', observeVisibleDirective);
 app.mount("#app")
 
-// Ruler function (same as before but with bottom positioning)
-function attachRuler(viewer, mppX){
-  const canvas = document.getElementById("ruler")
-  
-  function resize(){
-    const DPR=window.devicePixelRatio||1, rect=viewer.element.getBoundingClientRect()
-    canvas.width=Math.floor(rect.width*DPR); 
-    canvas.height=Math.floor(rect.height*DPR)
-    canvas.style.width=rect.width+"px"; 
-    canvas.style.height=rect.height+"px"
-  }
-  
-  function nice(v){ 
-    const p=Math.pow(10,Math.floor(Math.log10(v))); 
-    const d=v/p; 
-    const step=d<2?1:d<5?2:5; 
-    return step*p 
-  }
-  
-  function redraw(){
-    const ctx=canvas.getContext("2d"); 
-    if(!ctx) return
-    const DPR=window.devicePixelRatio||1; 
-    ctx.clearRect(0,0,canvas.width,canvas.height)
-    const vp=viewer.viewport; 
-    const zoom=vp.viewportToImageZoom(vp.getZoom(true))
-    const TARGET=220, imgPx=TARGET/zoom, um=imgPx*mppX, niceUm=nice(um)
-    const barCss=(niceUm/mppX)*zoom, barPx=barCss*DPR
-    const label=niceUm>=1000?`${(niceUm/1000).toFixed(niceUm%1000===0?0:1)} mm`:`${Math.round(niceUm)} µm`
-    
-    // Position in bottom-left
-    const leftPad = 30*DPR;
-    const bottomPad = 100*DPR;
-    let x0 = leftPad;
-    let y0 = canvas.height - bottomPad;
-    
-    x0 = Math.max(leftPad, Math.min(x0, canvas.width - 200*DPR)); 
-    y0 = Math.max(100*DPR, Math.min(y0, canvas.height - bottomPad));
+// Ruler function (with bottom positioning)
+function attachRuler(viewer, mppX, opts = {}) {
+  const canvas = document.getElementById("ruler");
+  const options = {
+    targetCssWidth: 220,    // visual bar width (CSS px)
+    majorTicks: 3,          // 3 = start–middle–end (use 5 for more)
+    tickLenCss: 5,          // short ticks
+    barThicknessCss: 2,     // thin baseline
+    labelFontSizeCss: 12,
+    pillPaddingCss: 12,     // inner padding
+    minPillWidthCss: 160,
+    // vertical gaps:
+    gapLabelToBarCss: 6,    // space between label and baseline
+    safeBottomMarginCss: 2, // keep a small gap above the pill bottom
+    // visuals:
+    pillBgRGBA: "rgba(255,255,255,0.8)",   // ~20% transparent
+    pillBorderRGBA: "rgba(17,24,39,0.10)", // subtle border
+    strokeRGBA: "#111827",
+    ...opts
+  };
 
-    // background pill
-    ctx.save()
-    const pillPad=16*DPR
-    const bgW=Math.max(barPx + pillPad*2, 140*DPR), bgH=32*DPR, rx=12*DPR
-    ctx.fillStyle="rgba(255,255,255,.98)"; 
-    ctx.strokeStyle="rgba(17,24,39,.08)"; 
-    ctx.lineWidth=1*DPR
-    ctx.beginPath()
-    ctx.moveTo(x0-pillPad+rx, y0-bgH)
-    ctx.arcTo(x0-pillPad+bgW, y0-bgH, x0-pillPad+bgW, y0, rx)
-    ctx.arcTo(x0-pillPad+bgW, y0, x0-pillPad, y0, rx)
-    ctx.arcTo(x0-pillPad, y0, x0-pillPad, y0-bgH, rx)
-    ctx.arcTo(x0-pillPad, y0-bgH, x0-pillPad+bgW, y0-bgH, rx)
-    ctx.closePath(); 
-    ctx.fill(); 
-    ctx.stroke()
-    ctx.restore()
-
-    // rule + label
-    const yRule=y0-12*DPR
-    ctx.strokeStyle="#111827"; 
-    ctx.lineWidth=2*DPR; 
-    ctx.beginPath(); 
-    ctx.moveTo(x0,yRule); 
-    ctx.lineTo(x0+barPx,yRule); 
-    ctx.stroke()
-    
-    ctx.lineWidth=6*DPR; 
-    ctx.beginPath(); 
-    ctx.moveTo(x0,yRule); 
-    ctx.lineTo(x0,yRule); 
-    ctx.stroke(); 
-    ctx.beginPath(); 
-    ctx.moveTo(x0+barPx,yRule); 
-    ctx.lineTo(x0+barPx,yRule); 
-    ctx.stroke()
-    
-    ctx.fillStyle="#111827"; 
-    ctx.font=`${12*DPR}px system-ui,-apple-system,Segoe UI,Roboto,Arial`; 
-    ctx.textBaseline='bottom'
-    ctx.fillText(label, x0, y0-16*DPR)
+  function resize() {
+    const DPR = window.devicePixelRatio || 1;
+    const rect = viewer.element.getBoundingClientRect();
+    canvas.width  = Math.floor(rect.width * DPR);
+    canvas.height = Math.floor(rect.height * DPR);
+    canvas.style.width  = rect.width + "px";
+    canvas.style.height = rect.height + "px";
   }
-  
-  function full(){ resize(); redraw() }
-  resize(); 
-  window.addEventListener("resize", full)
-  viewer.addHandler("update-viewport", redraw)
-  viewer.addHandler("full-screen", ()=>{ setTimeout(full, 100) })
-  viewer.addOnceHandler("open", full)
-  
-  return { resize, redraw }
+
+  function nice(v) {
+    const p = Math.pow(10, Math.floor(Math.log10(v)));
+    const d = v / p;
+    const step = d < 2 ? 1 : d < 5 ? 2 : 5;
+    return step * p;
+  }
+
+  function redraw() {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const DPR = window.devicePixelRatio || 1;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const vp = viewer.viewport;
+    const zoom = vp.viewportToImageZoom(vp.getZoom(true));
+
+    // Figure out a "nice" total length for the bar
+    const imgPx = options.targetCssWidth / zoom;
+    const um = imgPx * mppX;
+    const niceUm = nice(um);
+    const barCss = (niceUm / mppX) * zoom;
+    const barPx  = barCss * DPR;
+
+    const labelText = niceUm >= 1000
+      ? `${(niceUm/1000).toFixed(niceUm % 1000 === 0 ? 0 : 1)} mm`
+      : `${Math.round(niceUm)} µm`;
+
+    // Layout constants (device px)
+    const tickLen = options.tickLenCss * DPR;
+    const barTh   = options.barThicknessCss * DPR;
+    const pad     = options.pillPaddingCss * DPR;
+    const minPillW= options.minPillWidthCss * DPR;
+    const gapLbl2Bar = options.gapLabelToBarCss * DPR;
+    const safeBottomMargin = options.safeBottomMarginCss * DPR;
+
+    // Measure label width
+    const fontPx = options.labelFontSizeCss * DPR;
+    ctx.font = `${fontPx}px system-ui,-apple-system,Segoe UI,Roboto,Arial`;
+    const labelW = ctx.measureText(labelText).width;
+
+    // Pill sizing
+    const pillInnerW = Math.max(labelW, barPx);
+    const pillW = Math.max(minPillW, pillInnerW + pad * 2);
+    const pillH = Math.max(36 * DPR,                // enough room for label + bar + ticks
+                           fontPx + gapLbl2Bar + barTh + tickLen + pad * 2);
+
+    // Place pill near bottom-left (but safely on-screen)
+    const screenPad = 12 * DPR;
+    let pillX = 30 * DPR;
+    let pillY = canvas.height - (100 * DPR) - pillH;
+    pillX = Math.max(screenPad, Math.min(pillX, canvas.width  - pillW - screenPad));
+    pillY = Math.max(screenPad, Math.min(pillY, canvas.height - pillH - screenPad));
+
+    // Draw pill background with ~20% transparency
+    ctx.save();
+    const rx = 12 * DPR;
+    ctx.fillStyle = options.pillBgRGBA;     // translucent white
+    ctx.strokeStyle = options.pillBorderRGBA;
+    ctx.lineWidth = 1 * DPR;
+    ctx.beginPath();
+    ctx.moveTo(pillX + rx, pillY);
+    ctx.arcTo(pillX + pillW, pillY, pillX + pillW, pillY + pillH, rx);
+    ctx.arcTo(pillX + pillW, pillY + pillH, pillX, pillY + pillH, rx);
+    ctx.arcTo(pillX, pillY + pillH, pillX, pillY, rx);
+    ctx.arcTo(pillX, pillY, pillX + pillW, pillY, rx);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+
+    // Content frame
+    const contentX = pillX + (pillW - pillInnerW) / 2;
+    const contentTop = pillY + pad;
+    const safeTop = pillY + pad;
+    const safeBottom = pillY + pillH - pad - safeBottomMargin;
+
+    // Initial vertical positions (raised a bit)
+    let labelY = contentTop + fontPx;               // label line
+    let yRule  = labelY + gapLbl2Bar + barTh / 2;   // baseline
+    let tickBottom = yRule + tickLen;
+
+    // If ticks would hit bottom, shift everything up by the excess
+    if (tickBottom > safeBottom) {
+      const shiftUp = tickBottom - safeBottom;
+      labelY -= shiftUp;
+      yRule  -= shiftUp;
+      tickBottom -= shiftUp;
+    }
+    // Ensure we never go above the safe area either
+    if (labelY - fontPx < safeTop) {
+      const shiftDown = safeTop - (labelY - fontPx);
+      labelY += shiftDown;
+      yRule  += shiftDown;
+    }
+
+    // Center bar horizontally within inner content
+    const barX = contentX + (pillInnerW - barPx) / 2;
+
+    // Label (centered)
+    ctx.fillStyle = options.strokeRGBA;
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(labelText, pillX + pillW / 2 - labelW / 2, labelY);
+
+    // Baseline
+    ctx.strokeStyle = options.strokeRGBA;
+    ctx.lineWidth = barTh;
+    ctx.beginPath();
+    ctx.moveTo(barX, yRule);
+    ctx.lineTo(barX + barPx, yRule);
+    ctx.stroke();
+
+    // Evenly spaced ticks (identical, downward only)
+    const ticks = Math.max(2, Math.floor(options.majorTicks));
+    const segments = ticks - 1;
+    for (let i = 0; i < ticks; i++) {
+      const t = i / segments; // 0..1
+      const x = barX + t * barPx;
+      ctx.beginPath();
+      ctx.moveTo(x, yRule);
+      ctx.lineTo(x, Math.min(yRule + tickLen, safeBottom)); // clamp just in case
+      ctx.stroke();
+    }
+  }
+
+  function full(){ resize(); redraw(); }
+  resize();
+  window.addEventListener("resize", full);
+  viewer.addHandler("update-viewport", redraw);
+  viewer.addHandler("full-screen", () => { setTimeout(full, 100); });
+  viewer.addOnceHandler("open", full);
+
+  return { resize, redraw };
 }
+
 </script>
 </body>
 </html>
