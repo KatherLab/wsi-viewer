@@ -471,14 +471,19 @@ const Folder = {
 
 // Custom directive to hook IntersectionObserver to grid cards
 const observeVisibleDirective = {
-  mounted(el, binding, vnode) {
+  mounted(el, binding) {
     const vm = binding.instance;
-    // Defer if observer not yet created
     if (!vm.viewportObserver) {
       vm._toObserve.push(el);
       return;
     }
     vm.viewportObserver.observe(el);
+  },
+  updated(el, binding) {
+    const vm = binding.instance;
+    if (vm && vm.viewportObserver) {
+      vm.viewportObserver.observe(el);
+    }
   },
   unmounted(el, binding) {
     const vm = binding.instance;
@@ -487,6 +492,7 @@ const observeVisibleDirective = {
     }
   }
 };
+
 
 // Main app
 const app = createApp({
@@ -612,6 +618,38 @@ const app = createApp({
       return d.toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'});
     },
 
+    ensureObserver() {
+      // Rebuild the IntersectionObserver with the CURRENT grid root
+      if (this.viewportObserver) {
+        try { this.viewportObserver.disconnect(); } catch(e) {}
+        this.viewportObserver = null;
+      }
+      const root = this.$refs.gridContainer || null;
+
+      if ('IntersectionObserver' in window) {
+        this.viewportObserver = new IntersectionObserver((entries) => {
+          entries.forEach(entry => {
+            if (entry.isIntersecting) {
+              const slideId = entry.target.dataset.slideId;
+              const slide = this.visibleSlides.find(s => s.id === slideId);
+              if (slide && !slide.thumbUrl && !slide.thumbError) {
+                this.loadThumbnail(slide);
+              }
+            }
+          });
+        }, {
+          root,
+          rootMargin: '200px',
+          threshold: 0.01,
+        });
+
+        if (this._toObserve.length) {
+          this._toObserve.forEach(el => this.viewportObserver.observe(el));
+          this._toObserve = [];
+        }
+      }
+    },
+
     // Critical: Request management
     async makeRequest(url, priority = 0) {
       const controller = new AbortController();
@@ -633,7 +671,6 @@ const app = createApp({
     },
     
     cancelAllRequests() {
-      // Abort everything immediately
       for (const [id, req] of this.pendingRequests) {
         req.controller.abort();
       }
@@ -641,9 +678,12 @@ const app = createApp({
       this.requestQueue = [];
       this.loadingSlides.clear();
       this.activeRequests = 0;
-      // Also clear the queued thumbs
+
+      // Also clear queued thumbs and reset counters to avoid a stuck queue
       this.thumbQueue = [];
+      this.thumbInFlight = 0; // <— important reset
     },
+
     
     cancelRequestsOutsideViewport() {
       // Cancel requests for items not in current viewport
@@ -705,7 +745,7 @@ const app = createApp({
       const controller = new AbortController();
       const requestId = `thumb-${slide.id}`;
       this.pendingRequests.set(requestId, {controller, priority, url: `/api/thumb/${slide.id}`});
-      
+
       try {
         const timeoutId = setTimeout(() => controller.abort(), 8000);
         const resp = await fetch(`/api/thumb/${slide.id}`, {
@@ -716,7 +756,6 @@ const app = createApp({
 
         if (resp.ok) {
           const blob = await resp.blob();
-          // Revoke old (should be none) then set
           this.revokeThumb(slide);
           slide.thumbUrl = URL.createObjectURL(blob);
         } else {
@@ -730,7 +769,7 @@ const app = createApp({
         slide.loading = false;
         this.pendingRequests.delete(requestId);
         this.loadingSlides.delete(slide.id);
-        this.thumbInFlight--;
+        this.thumbInFlight = Math.max(0, this.thumbInFlight - 1); // clamp so it never goes negative
         this._drainThumbQueue();
       }
     },
@@ -854,21 +893,34 @@ const app = createApp({
     },
     
     initializeView(){
-      if(this.viewMode === 'grid') {
-        // Prepare slides; thumbs loaded lazily via IO + queue
+      if (this.viewMode === 'grid') {
+        // Rebuild slide list
         this.visibleSlides = this.filteredSlides.map(s => ({
           ...s,
           loading: false,
           thumbUrl: null,
           thumbError: false
         }));
-        
-        this.$nextTick(() => {
+
+        // Do the work after DOM is rendered
+        this.$nextTick(async () => {
+          const ok = await this.waitForGridRoot();
+          if (!ok) {
+            console.debug('[WSI] gridContainer ref not ready after retries; forcing prime as fallback');
+            this.forcePrimeThumbnails();
+            return;
+          }
+
+          // Now we definitely have the current grid root
+          this.ensureObserver();
+
+          // Two passes: immediate + post-layout
           this.updateViewport();
-          // Observe any elements that were created before observer existed
-          if (this.viewportObserver && this._toObserve.length) {
-            this._toObserve.forEach(el => this.viewportObserver.observe(el));
-            this._toObserve = [];
+          setTimeout(() => this.updateViewport(), 0);
+
+          // Safety net: if nothing in flight, prime a few
+          if (this.thumbInFlight === 0 && this.pendingRequests.size === 0) {
+            this.forcePrimeThumbnails();
           }
         });
       } else {
@@ -882,7 +934,28 @@ const app = createApp({
         });
       }
     },
-    
+
+    async waitForGridRoot(retries = 20) {
+      // Wait until this.$refs.gridContainer is available after view switches.
+      // 20 * 16ms ≈ ~320ms worst-case.
+      while (retries-- > 0) {
+        await this.$nextTick();
+        if (this.$refs.gridContainer) return true;
+        await new Promise(r => setTimeout(r, 16));
+      }
+      return !!this.$refs.gridContainer;
+    },
+
+    forcePrimeThumbnails(count = 24) {
+      // Fire some initial requests even if the observer or viewport math lags
+      const end = Math.min(this.visibleSlides.length, count);
+      for (let i = 0; i < end; i++) {
+        const s = this.visibleSlides[i];
+        if (s && !s.thumbUrl && !s.thumbError) this.loadThumbnail(s);
+      }
+    },
+
+
     loadMoreSlides(){
       // Grid view handles all slides at once
       // Just update viewport
@@ -890,12 +963,13 @@ const app = createApp({
     },
     
     switchViewMode(mode){
-      // revoke existing blobs when switching
+      // revoke existing blobs & cancel in-flight
       this.visibleSlides.forEach(s => this.revokeThumb(s));
       this.cancelAllRequests();
       this.viewMode = mode;
       this.initializeView();
     },
+
     
     goToPage(page){
       // revoke blobs from current page
@@ -981,14 +1055,13 @@ const app = createApp({
     
     closeViewer(){ 
       this.cancelAllRequests();
-      if(this.osd){ this.osd.destroy(); this.osd=null } 
-      this.current=null;
-      this.slideMeta=null;
-      this.associatedImages=[];
-      this.hasScale = false;   // reset
-      this.mpp = null;         // reset
+      if (this.osd) { this.osd.destroy(); this.osd = null; } 
+      this.current = null;
+      this.slideMeta = null;
+      this.associatedImages = [];
+      this.hasScale = false;
+      this.mpp = null;
 
-      // clear and hide ruler canvas
       const canvas = document.getElementById('ruler');
       if (canvas) {
         const ctx = canvas.getContext('2d');
@@ -997,12 +1070,17 @@ const app = createApp({
       }
 
       this.isFullscreen = false;
-      if(document.fullscreenElement) {
+      if (document.fullscreenElement) {
         document.exitFullscreen();
       }
-      // Revoke any existing blobs and re-init grid view
-      this.visibleSlides.forEach(s => this.revokeThumb(s));
-      this.initializeView();
+
+      // Rebuild grid after the viewer has fully unmounted
+      this.$nextTick(async () => {
+        // Wait for the grid DOM to exist again
+        const ok = await this.waitForGridRoot();
+        if (!ok) console.debug('[WSI] gridContainer ref not ready after closing viewer');
+        this.initializeView(); // initializeView itself will ensureObserver + updateViewport + prime
+      });
     },
 
     
@@ -1042,8 +1120,7 @@ const app = createApp({
   },
   
   mounted(){ 
-    this.loadTrees();
-    this.checkLogo();
+    this.loadTrees(); 
     
     // Listen for fullscreen changes
     document.addEventListener('fullscreenchange', () => {
@@ -1056,29 +1133,7 @@ const app = createApp({
     });
     
     // Setup IntersectionObserver for grid container
-    if ('IntersectionObserver' in window) {
-      this.viewportObserver = new IntersectionObserver((entries) => {
-        entries.forEach(entry => {
-          if (entry.isIntersecting) {
-            const slideId = entry.target.dataset.slideId;
-            const slide = this.visibleSlides.find(s => s.id === slideId);
-            if (slide && !slide.thumbUrl && !slide.thumbError) {
-              this.loadThumbnail(slide);
-            }
-          }
-        });
-      }, {
-        root: this.$refs.gridContainer || null,
-        rootMargin: '200px',
-        threshold: 0.01
-      });
-
-      // Observe any elements that were mounted before observer existed
-      if (this._toObserve.length) {
-        this._toObserve.forEach(el => this.viewportObserver.observe(el));
-        this._toObserve = [];
-      }
-    }
+    this.ensureObserver();
 
     // initial viewport compute
     this.$nextTick(() => this.updateViewport());
