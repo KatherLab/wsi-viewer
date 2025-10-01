@@ -1413,13 +1413,15 @@ function attachRuler(viewer, mppX, opts = {}) {
       ctx.stroke();
     }
 
-    // --- NEW: Minimal warning icon near bottom-right if resolution looks wrong ---
+    // --- NEW: Minimal warning icon anchored to the ruler pill (top-right corner) ---
     const vue = window.vueApp;
     if (vue && vue.resolutionSuspect) {
-      const tri = 18 * DPR; // triangle size
-      const padBR = 16 * DPR;
-      const x0 = canvas.width - tri - padBR;
-      const y0 = canvas.height - tri - padBR;
+      const tri = 16 * DPR;          // triangle size
+      const inset = 6 * DPR;         // distance from pill edges
+
+      // Anchor to the ruler pill's top-right corner
+      const x0 = pillX + pillW - tri - inset;
+      const y0 = pillY + inset;
 
       ctx.save();
       ctx.strokeStyle = "#d97706"; // amber-600
@@ -1437,10 +1439,10 @@ function attachRuler(viewer, mppX, opts = {}) {
 
       // exclamation
       ctx.fillStyle = "#92400e"; // amber-900
-      ctx.font = `${12 * DPR}px system-ui,-apple-system,Segoe UI,Roboto,Arial`;
+      ctx.font = `${11 * DPR}px system-ui,-apple-system,Segoe UI,Roboto,Arial`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText("!", x0 + tri / 2, y0 + tri * 0.63);
+      ctx.fillText("!", x0 + tri / 2, y0 + tri * 0.62);
       ctx.restore();
     }
   }
