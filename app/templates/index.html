@@ -1137,11 +1137,14 @@ const app = createApp({
       // Attach the ruler only if slide scale is known
       this.$nextTick(() => {
         const canvas = document.getElementById('ruler');
+        // Clean any previous hooks just in case
+        if (this._rulerDetach) { try { this._rulerDetach(); } catch(e) {} this._rulerDetach = null; }
+
         if (this.hasScale && this.mpp) {
-          canvas && (canvas.style.display = '');
-          attachRuler(this.osd, this.mpp);
+          if (canvas) canvas.style.display = '';
+          const detach = attachRuler(this.osd, this.mpp);
+          this._rulerDetach = detach; // save disposer for cleanup
         } else {
-          // ensure overlay is cleared/hidden if no reliable scale
           if (canvas) {
             const ctx = canvas.getContext('2d');
             ctx && ctx.clearRect(0,0,canvas.width,canvas.height);
@@ -1149,10 +1152,12 @@ const app = createApp({
           }
         }
       });
+
     },
     
     closeViewer(){ 
       this.cancelAllRequests();
+      if (this._rulerDetach) { try { this._rulerDetach(); } catch(e) {} this._rulerDetach = null; }
       if (this.osd) { this.osd.destroy(); this.osd = null; } 
       this.current = null;
       this.slideMeta = null;
@@ -1218,6 +1223,7 @@ const app = createApp({
   },
   
   mounted(){ 
+    window.vueApp = this;
     this.loadTrees(); 
     
     // Listen for fullscreen changes
@@ -1248,34 +1254,38 @@ const app = createApp({
 });
 app.directive('observe-visible', observeVisibleDirective);
 app.mount("#app")
-window.vueApp = app._instance.proxy;
 
 // Ruler function (with bottom positioning)
+// Ruler function (with bottom positioning) + resolution warning + cleanup support
 function attachRuler(viewer, mppX, opts = {}) {
   const canvas = document.getElementById("ruler");
   const options = {
-    targetCssWidth: 220,    // visual bar width (CSS px)
-    majorTicks: 3,          // 3 = start–middle–end (use 5 for more)
-    tickLenCss: 5,          // short ticks
-    barThicknessCss: 2,     // thin baseline
+    targetCssWidth: 220,
+    majorTicks: 3,
+    tickLenCss: 5,
+    barThicknessCss: 2,
     labelFontSizeCss: 12,
-    pillPaddingCss: 12,     // inner padding
+    pillPaddingCss: 12,
     minPillWidthCss: 160,
-    // vertical gaps:
-    gapLabelToBarCss: 6,    // space between label and baseline
-    safeBottomMarginCss: 2, // keep a small gap above the pill bottom
-    // visuals:
-    pillBgRGBA: "rgba(255,255,255,0.8)",   // ~20% transparent
-    pillBorderRGBA: "rgba(17,24,39,0.10)", // subtle border
+    gapLabelToBarCss: 6,
+    safeBottomMarginCss: 2,
+    pillBgRGBA: "rgba(255,255,255,0.8)",
+    pillBorderRGBA: "rgba(17,24,39,0.10)",
     strokeRGBA: "#111827",
     ...opts
   };
 
+  // No viewer? bail early
+  if (!viewer || !canvas) {
+    return () => {};
+  }
+
   function resize() {
+    if (!viewer || !viewer.element) return;
     const DPR = window.devicePixelRatio || 1;
     const rect = viewer.element.getBoundingClientRect();
-    canvas.width  = Math.floor(rect.width * DPR);
-    canvas.height = Math.floor(rect.height * DPR);
+    canvas.width  = Math.max(1, Math.floor(rect.width * DPR));
+    canvas.height = Math.max(1, Math.floor(rect.height * DPR));
     canvas.style.width  = rect.width + "px";
     canvas.style.height = rect.height + "px";
   }
@@ -1288,6 +1298,7 @@ function attachRuler(viewer, mppX, opts = {}) {
   }
 
   function redraw() {
+    if (!viewer || !viewer.element) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -1298,6 +1309,7 @@ function attachRuler(viewer, mppX, opts = {}) {
     const zoom = vp.viewportToImageZoom(vp.getZoom(true));
 
     // Figure out a "nice" total length for the bar
+    const rect = viewer.element.getBoundingClientRect();
     const imgPx = options.targetCssWidth / zoom;
     const um = imgPx * mppX;
     const niceUm = nice(um);
@@ -1324,29 +1336,30 @@ function attachRuler(viewer, mppX, opts = {}) {
     // Pill sizing
     const pillInnerW = Math.max(labelW, barPx);
     const pillW = Math.max(minPillW, pillInnerW + pad * 2);
-    const pillH = Math.max(36 * DPR,                // enough room for label + bar + ticks
-                           fontPx + gapLbl2Bar + barTh + tickLen + pad * 2);
+    const pillH = Math.max(36 * DPR, fontPx + gapLbl2Bar + barTh + tickLen + pad * 2);
 
-    // Place pill near bottom-left (but safely on-screen)
+    // Place pill near bottom-left
     const screenPad = 12 * DPR;
     let pillX = 30 * DPR;
     let pillY = canvas.height - (100 * DPR) - pillH;
     pillX = Math.max(screenPad, Math.min(pillX, canvas.width  - pillW - screenPad));
     pillY = Math.max(screenPad, Math.min(pillY, canvas.height - pillH - screenPad));
 
-    // Draw pill background with ~20% transparency
+    // Draw pill background
     ctx.save();
     const rx = 12 * DPR;
-    ctx.fillStyle = options.pillBgRGBA;     // translucent white
+    ctx.fillStyle = options.pillBgRGBA;
     ctx.strokeStyle = options.pillBorderRGBA;
     ctx.lineWidth = 1 * DPR;
     ctx.beginPath();
+    // rounded rect (manual for wider support)
     ctx.moveTo(pillX + rx, pillY);
     ctx.arcTo(pillX + pillW, pillY, pillX + pillW, pillY + pillH, rx);
     ctx.arcTo(pillX + pillW, pillY + pillH, pillX, pillY + pillH, rx);
     ctx.arcTo(pillX, pillY + pillH, pillX, pillY, rx);
     ctx.arcTo(pillX, pillY, pillX + pillW, pillY, rx);
-    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
     ctx.restore();
 
     // Content frame
@@ -1355,19 +1368,17 @@ function attachRuler(viewer, mppX, opts = {}) {
     const safeTop = pillY + pad;
     const safeBottom = pillY + pillH - pad - safeBottomMargin;
 
-    // Initial vertical positions (raised a bit)
-    let labelY = contentTop + fontPx;               // label line
-    let yRule  = labelY + gapLbl2Bar + barTh / 2;   // baseline
+    // Vertical positions
+    let labelY = contentTop + fontPx;
+    let yRule  = labelY + gapLbl2Bar + barTh / 2;
     let tickBottom = yRule + tickLen;
 
-    // If ticks would hit bottom, shift everything up by the excess
     if (tickBottom > safeBottom) {
       const shiftUp = tickBottom - safeBottom;
       labelY -= shiftUp;
       yRule  -= shiftUp;
       tickBottom -= shiftUp;
     }
-    // Ensure we never go above the safe area either
     if (labelY - fontPx < safeTop) {
       const shiftDown = safeTop - (labelY - fontPx);
       labelY += shiftDown;
@@ -1377,7 +1388,7 @@ function attachRuler(viewer, mppX, opts = {}) {
     // Center bar horizontally within inner content
     const barX = contentX + (pillInnerW - barPx) / 2;
 
-    // Label (centered)
+    // Label
     ctx.fillStyle = options.strokeRGBA;
     ctx.textBaseline = "alphabetic";
     ctx.fillText(labelText, pillX + pillW / 2 - labelW / 2, labelY);
@@ -1390,7 +1401,7 @@ function attachRuler(viewer, mppX, opts = {}) {
     ctx.lineTo(barX + barPx, yRule);
     ctx.stroke();
 
-    // Evenly spaced ticks (identical, downward only)
+    // Ticks
     const ticks = Math.max(2, Math.floor(options.majorTicks));
     const segments = ticks - 1;
     for (let i = 0; i < ticks; i++) {
@@ -1398,48 +1409,60 @@ function attachRuler(viewer, mppX, opts = {}) {
       const x = barX + t * barPx;
       ctx.beginPath();
       ctx.moveTo(x, yRule);
-      ctx.lineTo(x, Math.min(yRule + tickLen, safeBottom)); // clamp just in case
+      ctx.lineTo(x, Math.min(yRule + tickLen, safeBottom));
       ctx.stroke();
     }
 
-    // --- NEW: Resolution warning symbol at ruler ---
-    if (window.vueApp && window.vueApp.resolutionSuspect) {
-      const ctxSize = 18 * DPR;
-      const x = rect.width * DPR - ctxSize - 16 * DPR;
-      const y = rect.height * DPR - ctxSize - 16 * DPR;
+    // --- NEW: Minimal warning icon near bottom-right if resolution looks wrong ---
+    const vue = window.vueApp;
+    if (vue && vue.resolutionSuspect) {
+      const tri = 18 * DPR; // triangle size
+      const padBR = 16 * DPR;
+      const x0 = canvas.width - tri - padBR;
+      const y0 = canvas.height - tri - padBR;
 
       ctx.save();
       ctx.strokeStyle = "#d97706"; // amber-600
-      ctx.fillStyle = "#fef3c7";   // amber-50 background
+      ctx.fillStyle = "#fef3c7";   // amber-50
       ctx.lineWidth = 2 * DPR;
 
-      // Triangle background
+      // equilateral triangle
       ctx.beginPath();
-      ctx.moveTo(x + ctxSize / 2, y);
-      ctx.lineTo(x + ctxSize, y + ctxSize);
-      ctx.lineTo(x, y + ctxSize);
+      ctx.moveTo(x0 + tri / 2, y0);
+      ctx.lineTo(x0 + tri, y0 + tri);
+      ctx.lineTo(x0, y0 + tri);
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
 
-      // Exclamation mark
+      // exclamation
       ctx.fillStyle = "#92400e"; // amber-900
       ctx.font = `${12 * DPR}px system-ui,-apple-system,Segoe UI,Roboto,Arial`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText("!", x + ctxSize / 2, y + ctxSize / 1.7);
+      ctx.fillText("!", x0 + tri / 2, y0 + tri * 0.63);
       ctx.restore();
     }
   }
 
-  function full(){ resize(); redraw(); }
-  resize();
-  window.addEventListener("resize", full);
-  viewer.addHandler("update-viewport", redraw);
-  viewer.addHandler("full-screen", () => { setTimeout(full, 100); });
-  viewer.addOnceHandler("open", full);
+  // Wire handlers with cleanup
+  const onResize = () => { resize(); redraw(); };
+  const onViewport = () => redraw();
+  const onFull = () => { setTimeout(onResize, 100); };
 
-  return { resize, redraw };
+  // Initial setup
+  resize();
+  viewer.addHandler("update-viewport", onViewport);
+  viewer.addHandler("full-screen", onFull);
+  viewer.addOnceHandler("open", onResize);
+  window.addEventListener("resize", onResize);
+
+  // Return a disposer so callers can clean up
+  return () => {
+    try { window.removeEventListener("resize", onResize); } catch(e) {}
+    try { viewer && viewer.removeHandler("update-viewport", onViewport); } catch(e) {}
+    try { viewer && viewer.removeHandler("full-screen", onFull); } catch(e) {}
+  };
 }
 
 </script>
