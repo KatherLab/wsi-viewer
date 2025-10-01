@@ -1248,6 +1248,7 @@ const app = createApp({
 });
 app.directive('observe-visible', observeVisibleDirective);
 app.mount("#app")
+window.vueApp = app._instance.proxy;
 
 // Ruler function (with bottom positioning)
 function attachRuler(viewer, mppX, opts = {}) {
@@ -1399,6 +1400,35 @@ function attachRuler(viewer, mppX, opts = {}) {
       ctx.moveTo(x, yRule);
       ctx.lineTo(x, Math.min(yRule + tickLen, safeBottom)); // clamp just in case
       ctx.stroke();
+    }
+
+    // --- NEW: Resolution warning symbol at ruler ---
+    if (window.vueApp && window.vueApp.resolutionSuspect) {
+      const ctxSize = 18 * DPR;
+      const x = rect.width * DPR - ctxSize - 16 * DPR;
+      const y = rect.height * DPR - ctxSize - 16 * DPR;
+
+      ctx.save();
+      ctx.strokeStyle = "#d97706"; // amber-600
+      ctx.fillStyle = "#fef3c7";   // amber-50 background
+      ctx.lineWidth = 2 * DPR;
+
+      // Triangle background
+      ctx.beginPath();
+      ctx.moveTo(x + ctxSize / 2, y);
+      ctx.lineTo(x + ctxSize, y + ctxSize);
+      ctx.lineTo(x, y + ctxSize);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Exclamation mark
+      ctx.fillStyle = "#92400e"; // amber-900
+      ctx.font = `${12 * DPR}px system-ui,-apple-system,Segoe UI,Roboto,Arial`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("!", x + ctxSize / 2, y + ctxSize / 1.7);
+      ctx.restore();
     }
   }
 
