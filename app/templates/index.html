@@ -129,6 +129,23 @@
     .mode-grid main{grid-template-rows:1fr}
     .mode-viewer main{grid-template-rows:1fr}
 
+    /* Resolution warning icon + tooltip */
+    .warn {
+      display:inline-flex; align-items:center; margin-left:6px; position:relative;
+    }
+    .warn svg { flex:0 0 auto; }
+    .warn .tip {
+      position:absolute; left:20px; bottom:100%;
+      transform:translateY(-6px);
+      background:#fef3c7; color:#92400e; border:1px solid #f59e0b;
+      border-radius:6px; padding:6px 8px; font-size:12px; white-space:nowrap;
+      box-shadow:0 6px 20px rgba(0,0,0,.08);
+      visibility:hidden; opacity:0; transition:opacity .15s ease;
+      z-index:100;
+    }
+    .warn:hover .tip { visibility:visible; opacity:1; }
+
+
     /* Fullscreen adjustments */
     #viewer:-webkit-full-screen .toolbar,
     #viewer:-webkit-full-screen .back-btn,
@@ -367,11 +384,39 @@
             </div>
             <div class="info-row" v-if="slideMeta.mpp_x">
               <span class="info-label">Resolution</span>
-              <span class="info-value">{{ slideMeta.mpp_x.toFixed(3) }} µm/px</span>
+              <span class="info-value">
+                {{ slideMeta.mpp_x.toFixed(3) }} µm/px
+                <span v-if="resolutionSuspect" class="warn" :title="resolutionWarning" aria-label="Resolution warning">
+                  <!-- Warning triangle icon -->
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                      stroke="currentColor" stroke-width="2" style="color:#d97706">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                    <line x1="12" y1="9" x2="12" y2="13"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                  </svg>
+                  <!-- Fancy tooltip (optional; remove if you only want the native title) -->
+                  <span class="tip">{{ resolutionWarning }}</span>
+                </span>
+              </span>
             </div>
             <div class="info-row">
               <span class="info-label">Levels</span>
               <span class="info-value">{{ slideMeta.level_count }}</span>
+            </div>
+            <div class="info-row" v-if="!slideMeta.mpp_x">
+              <span class="info-label">Resolution</span>
+              <span class="info-value" title="No microns-per-pixel in metadata; scale bar disabled.">
+                <span class="warn">
+                  Unknown
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                      stroke="currentColor" stroke-width="2" style="color:#6b7280; margin-left:6px">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="8" x2="12" y2="12"/>
+                    <line x1="12" y1="16" x2="12.01" y2="16"/>
+                  </svg>
+                  <span class="tip">No scale found in metadata; the ruler is hidden.</span>
+                </span>
+              </span>
             </div>
             <div class="info-row" v-if="slideMeta.file_size">
               <span class="info-label">File size</span>
@@ -553,6 +598,38 @@ const app = createApp({
   },
   
   computed:{
+    resolutionSuspect(){
+      // Guard: need metadata available
+      const m = this.slideMeta;
+      if (!m || !Number.isFinite(m?.mpp_x)) return false;
+
+      const x = m.mpp_x;
+
+      // Heuristics for WSI (typical: ~0.25 µm/px @40x; ~0.5 @20x; ~1.0 @10x; ~2.0 @5x)
+      // Flag anything clearly out of band:
+      //  - absurdly small: < 0.01 µm/px (nanoscale) -> broken
+      //  - very large:     > 5 µm/px (unlikely for diagnostic WSI)
+      //  - extremely large: > 50 µm/px (definitely broken)
+      return (x < 0.01) || (x > 5);
+    },
+    resolutionWarning(){
+      const m = this.slideMeta;
+      if (!m || !Number.isFinite(m?.mpp_x)) return "";
+      const x = m.mpp_x;
+
+      if (x < 0.01) {
+        return `Unrealistic resolution (${x.toFixed(3)} µm/px). Value is too small for WSI — metadata likely incorrect.`;
+      }
+      if (x > 50) {
+        return `Unrealistic resolution (${x.toFixed(3)} µm/px). Value is extremely large — metadata likely incorrect.`;
+      }
+      if (x > 5) {
+        return `Suspicious resolution (${x.toFixed(3)} µm/px). Much larger than typical WSI — metadata may be incorrect.`;
+      }
+      return "";
+    },
+
+
     filteredTrees(){
       if(!this.q) return this.trees
       const term = this.q.toLowerCase()
