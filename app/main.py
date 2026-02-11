@@ -301,7 +301,7 @@ async def api_tree():
                 base_path,
                 list(EXTS),
                 cfg.exclude,
-                timeout=10
+                timeout=60
             )
 
             node = Node(
@@ -373,7 +373,7 @@ async def api_expand(path: str, request: Request):
             dirp,
             list(EXTS),
             cfg.exclude,
-            timeout=15
+            timeout=30
         )
 
         children.sort(key=lambda n: (n.slide_count == 0, n.name.lower()))
