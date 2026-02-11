@@ -3,3 +3,4 @@ __pycache__
 slides/
 config.yml
 docker-compose-local.yml
+.env
