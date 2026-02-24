@@ -13,17 +13,38 @@ def stable_id_from_path(p: Path) -> str:
     return hashlib.sha1(str(p.resolve()).encode()).hexdigest()[:16]
 
 def should_skip(name: str, exclude: list[str]) -> bool:
+    """
+    Check if a file/folder name should be excluded.
+    
+    ✅ P3: Plain patterns (no glob chars) now match as exact names, not substrings.
+           Old behavior: exclude "tmp" would also skip "attempt_p1" and "comptmp_data".
+           New behavior: exclude "tmp" only skips entries named exactly "tmp".
+           Glob patterns like "*.zip" still work via fnmatch.
+    """
     lname = name.lower()
     for ex in exclude:
         exl = ex.lower()
-        # Use glob semantics where patterns are present; else fallback to substring.
         if any(ch in exl for ch in "*?[]"):
+            # Glob pattern — use fnmatch
             if fnmatch.fnmatch(lname, exl):
                 return True
         else:
-            if exl in lname:
+            # Plain string — exact match only (case-insensitive)
+            if lname == exl:
                 return True
     return False
+
+
+def nfs_probe(root: Path) -> bool:
+    """Quick check that a directory (NFS mount) is responsive."""
+    try:
+        root.stat()
+        with os.scandir(root) as it:
+            next(it, None)
+        return True
+    except Exception as e:
+        log.error(f"NFS probe FAILED for {root}: {e}")
+        return False
 
 def scan_directory_shallow_optimized(dirp: Path, extensions: list[str], exclude: list[str]) -> tuple[list[Node], int]:
     """
@@ -42,8 +63,6 @@ def scan_directory_shallow_optimized(dirp: Path, extensions: list[str], exclude:
                     continue
 
                 if entry.is_dir(follow_symlinks=False):
-                    # For directories, create node without deep scanning
-                    # Use quick check for has_children
                     has_children = quick_has_subdirs(Path(entry.path), exclude)
 
                     child_node = Node(
@@ -51,14 +70,13 @@ def scan_directory_shallow_optimized(dirp: Path, extensions: list[str], exclude:
                         name=entry.name,
                         path=entry.path,
                         is_dir=True,
-                        children=None,  # Will be loaded on demand
-                        slide_count=0,  # Will be counted on demand
-                        has_children=has_children  # Boolean, not None
+                        children=None,
+                        slide_count=0,
+                        has_children=has_children
                     )
                     children.append(child_node)
 
                 elif entry.is_file(follow_symlinks=False):
-                    # Check if it's a slide file
                     name_lower = entry.name.lower()
                     for ext in extensions:
                         if name_lower.endswith(ext):
@@ -68,29 +86,34 @@ def scan_directory_shallow_optimized(dirp: Path, extensions: list[str], exclude:
             except (PermissionError, OSError):
                 continue
 
+    # ✅ P1: Elevated from log.debug → log.warning so NFS errors are visible
     except (PermissionError, OSError) as e:
-        log.debug(f"Cannot list directory {dirp}: {e}")
+        log.warning(f"Cannot list directory {dirp}: {e}")
 
     return children, slide_count
 
 def quick_has_subdirs(dirp: Path, exclude: list[str]) -> bool:
     """
     Quick check if directory has subdirectories.
-    Returns False if unknown to avoid None values.
+    ✅ P1: On ANY error, returns True (optimistic) instead of False,
+           so folders aren't incorrectly hidden when NFS hiccups.
+    ✅ P1: Bare except replaced with explicit OSError catches.
     """
     try:
         with os.scandir(dirp) as entries:
             for i, entry in enumerate(entries):
-                if i > 10:  # Only check first 10 entries
-                    return True  # Assume it has children if many entries
+                if i > 10:
+                    return True
                 try:
                     if entry.is_dir(follow_symlinks=False) and not should_skip(entry.name, exclude):
                         return True
-                except:
+                except OSError as e:
+                    log.warning(f"quick_has_subdirs: entry check failed in {dirp}: {e}")
                     continue
         return False
-    except:
-        return False  # Return False instead of None when we can't determine
+    except OSError as e:
+        log.warning(f"quick_has_subdirs: scandir failed for {dirp}: {e}")
+        return True  # ✅ Optimistic default — assume children exist
 
 def build_tree_shallow(root_path: Path, extensions: list[str], exclude: list[str]) -> Node:
     """Build only the top level of the tree."""
@@ -98,7 +121,6 @@ def build_tree_shallow(root_path: Path, extensions: list[str], exclude: list[str
 
     children, slide_count = scan_directory_shallow_optimized(root_path, extensions, exclude)
 
-    # Sort children: directories with slides first, then by name
     children.sort(key=lambda n: (n.slide_count == 0, n.name.lower()))
 
     return Node(
@@ -111,7 +133,6 @@ def build_tree_shallow(root_path: Path, extensions: list[str], exclude: list[str
         has_children=len(children) > 0
     )
 
-# Keep the old build_tree function for compatibility if needed
 def build_tree(root_path: Path, extensions: list[str], exclude: list[str]) -> Node:
     """Full recursive tree building (fallback)."""
     root_path = root_path.resolve()

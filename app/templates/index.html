@@ -265,10 +265,13 @@
                      alt="preview"
                      loading="lazy"/>
                 <div v-else class="fallback" aria-hidden="true">
-                  <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.6">
-                    <rect x="3" y="3" width="18" height="14" rx="2" ry="2"></rect>
-                    <circle cx="8.5" cy="8.5" r="1.5"></circle>
-                    <path d="M21 20l-5.5-5.5a2 2 0 0 0-2.8 0L3 20"></path>
+                  <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" style="opacity:.35">
+                    <!-- Glass slide body -->
+                    <rect x="2" y="5" width="20" height="14" rx="1.5"/>
+                    <!-- Frosted label area -->
+                    <rect x="2" y="5" width="5" height="14" rx="1" fill="currentColor" opacity="0.15"/>
+                    <!-- Specimen circle -->
+                    <circle cx="15" cy="12" r="3" stroke-dasharray="2 1.5"/>
                   </svg>
                 </div>
               </div>
@@ -288,7 +291,7 @@
         <!-- List view -->
         <div v-if="viewMode === 'list'" class="list-container">
           <div class="list">
-            <div v-for="s in paginatedSlides" 
+            <div v-for="s in visibleSlides" 
                  :key="s.id" 
                  class="list-item" 
                  @click="view(s.id)"
@@ -614,7 +617,11 @@ const app = createApp({
       viewportObserver:null,
 
       // Elements awaiting observer creation
-      _toObserve: []
+      _toObserve: [],
+      
+      // ✅ P3: Guard flag for blob URL leak prevention
+      _unmounted: false
+
     } 
   },
   
@@ -814,6 +821,7 @@ const app = createApp({
     // Thumbnail loading with a queue + strict viewport priority
     loadThumbnail(slide) {
       if (!slide || slide.thumbUrl || slide.thumbError || this.loadingSlides.has(slide.id)) return;
+      this.loadingSlides.add(slide.id);
       // priority based on distance to viewport center
       const slideIndex = this.visibleSlides.indexOf(slide);
       const viewportCenter = (this.visibleRange.start + this.visibleRange.end) / 2;
@@ -835,8 +843,7 @@ const app = createApp({
     },
 
     async _fetchThumb(slide, priority) {
-      if (!slide || slide.thumbUrl || slide.thumbError || this.loadingSlides.has(slide.id)) return;
-      this.loadingSlides.add(slide.id);
+      if (!slide || slide.thumbUrl || slide.thumbError) return;
       slide.loading = true;
       this.thumbInFlight++;
 
@@ -854,6 +861,9 @@ const app = createApp({
 
         if (resp.ok) {
           const blob = await resp.blob();
+          if (this._unmounted) {
+            return;
+          }
           this.revokeThumb(slide);
           slide.thumbUrl = URL.createObjectURL(blob);
         } else {
@@ -1022,9 +1032,17 @@ const app = createApp({
           }
         });
       } else {
-        // List view - load thumbnails for current page only
+        // List view - build visibleSlides from current page so thumbnails
+        // are loaded onto the same objects Vue is rendering.
+        this.visibleSlides = this.paginatedSlides.map(s => ({
+          ...s,
+          loading: false,
+          thumbUrl: null,
+          thumbError: false
+        }));
+
         this.$nextTick(() => {
-          this.paginatedSlides.forEach(slide => {
+          this.visibleSlides.forEach(slide => {
             if (!slide.thumbUrl && !slide.thumbError) {
               this.loadThumbnail(slide);
             }
@@ -1237,13 +1255,15 @@ const app = createApp({
     });
     
     // Setup IntersectionObserver for grid container
-    this.ensureObserver();
+    // this.ensureObserver();
 
     // initial viewport compute
     this.$nextTick(() => this.updateViewport());
   },
   
-  beforeUnmount() {
+beforeUnmount() {
+    // ✅ P3: Set guard flag FIRST so in-flight fetches don't create new blob URLs
+    this._unmounted = true;
     this.cancelAllRequests();
     if (this.viewportObserver) {
       this.viewportObserver.disconnect();
@@ -1251,6 +1271,7 @@ const app = createApp({
     // Revoke any allocated blobs
     this.visibleSlides.forEach(s => this.revokeThumb(s));
   }
+
 });
 app.directive('observe-visible', observeVisibleDirective);
 app.mount("#app")

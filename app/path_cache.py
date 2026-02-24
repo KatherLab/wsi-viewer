@@ -1,16 +1,19 @@
 # path_cache.py
 from __future__ import annotations
+import json
 import os
-import pickle
 from pathlib import Path
 from collections import OrderedDict
 from typing import Optional, Iterable, Tuple
+import logging
 
-# Tiny LRU for hot entries per worker
+log = logging.getLogger(__name__)
+
+
 class LRU:
     def __init__(self, cap: int = 100_000):
         self.cap = cap
-        self._od = OrderedDict()
+        self._od: OrderedDict[str, str] = OrderedDict()
 
     def get(self, k: str) -> Optional[str]:
         if k in self._od:
@@ -26,22 +29,28 @@ class LRU:
         if len(self._od) > self.cap:
             self._od.popitem(last=False)
 
+    # ✅ Fix #15: Proper delete method
+    def pop(self, k: str):
+        self._od.pop(k, None)
+
     def items(self):
         return self._od.items()
 
     def __len__(self):
         return len(self._od)
 
+
 class PathCache:
     """
     Shared path cache with Redis primary (if available) and local LRU read-through.
     Keyspace: HSET {ns} slide_id -> absolute path
     """
-    def __init__(self, redis_client, namespace: str, pickle_file: Path, lru_cap: int = 100_000):
+    def __init__(self, redis_client, namespace: str, cache_file: Path, lru_cap: int = 100_000):
         self.r = redis_client  # may be None
         self.ns = namespace
         self.lru = LRU(lru_cap)
-        self.pickle_file = pickle_file
+        # ✅ Fix #12: Use JSON instead of pickle for safe deserialization
+        self.cache_file = cache_file.with_suffix(".json")
 
     # ------- Reads / writes
     def get(self, slide_id: str) -> Optional[Path]:
@@ -52,7 +61,6 @@ class PathCache:
             if p.exists():
                 return p
             else:
-                # stale local
                 self.delete(slide_id)
 
         # 2) Redis
@@ -61,32 +69,26 @@ class PathCache:
             if val:
                 p = Path(val.decode("utf-8"))
                 if p.exists():
-                    # promote to LRU
                     self.lru.set(slide_id, str(p))
                     return p
                 else:
-                    # stale global mapping
                     self.r.hdel(self.ns, slide_id)
                     return None
 
-        # 3) LRU miss, Redis missing/stale
         return None
 
     def set(self, slide_id: str, path: Path):
         s = str(path)
-        # write-through
         self.lru.set(slide_id, s)
         if self.r:
             try:
                 self.r.hset(self.ns, slide_id, s)
             except Exception:
-                # ignore redis hiccups; lru still has it
                 pass
 
     def delete(self, slide_id: str):
-        # local
-        # removing from LRU by re-creating without key is ok; not used heavily
-        # (optional) we could add a .pop; fine to ignore for simplicity
+        # ✅ Fix #15: Actually remove from LRU
+        self.lru.pop(slide_id)
         if self.r:
             try:
                 self.r.hdel(self.ns, slide_id)
@@ -94,8 +96,6 @@ class PathCache:
                 pass
 
     def mset(self, pairs: Iterable[Tuple[str, str]]):
-        # bulk set from directory scans
-        # update LRU
         for k, v in pairs:
             self.lru.set(k, v)
         if self.r:
@@ -107,25 +107,32 @@ class PathCache:
             except Exception:
                 pass
 
-    # ------- Persistence fallback (pickle) only when Redis is off
+    # ------- Persistence fallback (JSON) only when Redis is off
     def load_pickle(self):
-        if self.r:  # Redis mode: no pickle load
+        """Load from JSON file (name kept for backward compat)."""
+        if self.r:
             return
-        if self.pickle_file.exists():
+        if self.cache_file.exists():
             try:
-                with open(self.pickle_file, "rb") as f:
-                    od = pickle.load(f)
-                # od is OrderedDict[str, str]
-                for k, v in od.items():
+                with open(self.cache_file, "r") as f:
+                    data = json.load(f)
+                for k, v in data.items():
                     self.lru.set(k, v)
-            except Exception:
-                pass
+                log.info(f"Loaded {len(data)} entries from path cache: {self.cache_file}")
+            except Exception as e:
+                log.warning(f"Failed to load path cache from {self.cache_file}: {e}")
 
     def save_pickle(self):
-        if self.r:  # Redis mode: no pickle save (Redis persists itself)
+        """Save to JSON file (name kept for backward compat)."""
+        if self.r:
             return
         try:
-            with open(self.pickle_file, "wb") as f:
-                pickle.dump(OrderedDict(self.lru.items()), f)
-        except Exception:
-            pass
+            data = dict(self.lru.items())
+            # Write to a temp file first, then rename for atomicity
+            tmp = self.cache_file.with_suffix(".json.tmp")
+            with open(tmp, "w") as f:
+                json.dump(data, f)
+            tmp.rename(self.cache_file)
+            log.info(f"Saved {len(data)} entries to path cache: {self.cache_file}")
+        except Exception as e:
+            log.warning(f"Failed to save path cache to {self.cache_file}: {e}")
