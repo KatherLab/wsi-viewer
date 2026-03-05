@@ -1,6 +1,8 @@
 # WSI Browser
 
-A modern, high-performance whole-slide image (WSI) viewer for digital pathology, built with FastAPI, Vue.js, and OpenSeadragon.
+![Full-screen view of the Slide Viewer](assets/fullscreenviewer.png)
+
+A modern, web-based whole-slide image (WSI) viewer for digital pathology, built with FastAPI, Vue.js, and OpenSeadragon. View all of the slides on your server!
 
 ![Python](https://img.shields.io/badge/python-3.13-blue.svg)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.104-green.svg)
