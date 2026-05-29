@@ -2,10 +2,25 @@ from __future__ import annotations
 
 import io
 import math
+import threading
+import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+
+QPTIFF_RENDER_VERSION = "qptiff-render-v2-global-range"
+
+
+@dataclass(frozen=True)
+class ChannelDisplay:
+    marker: str
+    color: str  # hex RGB, e.g. "#00ffff"
+    min: float
+    max: float
+    gamma: float = 1.0
 
 
 class QptiffDZ:
@@ -18,20 +33,52 @@ class QptiffDZ:
     Pyramid level aware: translates DZI level to the closest native pyramid
     level for fast, already-downsampled reads.
 
-    Per-tile normalization applied to pyramid-level ROI data (much smaller
-    reads), avoiding brightness shifts while panning.
-
-    Channels and colors can be overridden per-request via query params.
+    Display normalization is global per channel — stable min/max/gamma are
+    computed once per marker and reused across all tiles and zoom levels.
     """
 
-    PALETTE = ["red", "green", "blue", "cyan", "magenta", "yellow", "orange", "lime", "purple", "teal"]
+    DEFAULT_MARKER_COLORS = {
+        # Nuclear / DNA
+        "dapi": "#3366ff",
+        "hoechst": "#3366ff",
+        "hoechst33342": "#3366ff",
+        "nuclei": "#3366ff",
 
-    COLOR_CHANNELS: dict[str, list[int]] = {
-        "red": [0], "green": [1], "blue": [2],
-        "cyan": [1, 2], "magenta": [0, 2], "yellow": [0, 1],
-        "orange": [0], "lime": [1], "purple": [2], "teal": [1, 2],
-        "white": [0, 1, 2], "gray": [0, 1, 2],
+        # Background / context
+        "af": "#808080",
+        "autofluorescence": "#808080",
+        "background": "#808080",
+
+        # Common immune / tissue markers
+        "cd3": "#00ffff",
+        "cd4": "#00ff66",
+        "cd8": "#ff6600",
+        "cd20": "#ff00ff",
+        "cd68": "#ffaa00",
+        "foxp3": "#cc66ff",
+        "ki67": "#ff3333",
+        "pdl1": "#ffcc00",
+        "panck": "#ffff00",
+        "cytokeratin": "#ffff00",
+        "ecadherin": "#ffffff",
+        "vimentin": "#00ff99",
     }
+
+    # Colorblind-friendlier qualitative fallback palette
+    PALETTE_HEX = [
+        "#00ffff",  # cyan
+        "#ff00ff",  # magenta
+        "#ffff00",  # yellow
+        "#ff9900",  # orange
+        "#66ff66",  # light green
+        "#3399ff",  # light blue
+        "#ff6666",  # salmon
+        "#cc66ff",  # purple
+        "#ffffff",  # white
+        "#999999",  # gray
+        "#00ff99",  # mint
+        "#ffcc00",  # amber
+    ]
 
     def __init__(
         self,
@@ -51,14 +98,21 @@ class QptiffDZ:
         self.markers = markers or self._default_markers()
         self.colors = colors or self._assign_colors(self.markers)
 
-        # Detect native pyramid levels from mx.series[0].levels
-        self._native_levels = self._detect_native_levels()
+        # Detect native pyramid level shapes
+        self._native_level_shapes = self._detect_native_level_shapes()
+        self._native_levels = len(self._native_level_shapes)
 
-        self.width, self.height = self._detect_full_resolution_size()
+        self.width, self.height = self._native_level_shapes[0]
 
         # DZI level count: compute so that the coarsest DZI level fits in one tile
         self.max_dzi_level = int(math.ceil(math.log2(max(self.width, self.height))))
         self.level_count = self.max_dzi_level + 1
+
+        # Per-marker display range cache (computed once globally)
+        self._display_cache: dict[str, ChannelDisplay] = {}
+
+        # Read lock around mxtifffile calls
+        self._read_lock = threading.RLock()
 
     def close(self) -> None:
         """Close the underlying mxtifffile handle if available."""
@@ -95,6 +149,9 @@ class QptiffDZ:
         y: int,
         channels: list[str] | None = None,
         colors: list[str] | None = None,
+        mins: list[float] | None = None,
+        maxs: list[float] | None = None,
+        gammas: list[float] | None = None,
     ) -> bytes:
         if level < 0 or level >= self.level_count:
             raise ValueError(f"Invalid DZI level {level}")
@@ -119,18 +176,30 @@ class QptiffDZ:
 
         # Which channels to use
         active_markers = channels or self.markers
-        active_colors = colors or self.colors
+        active_colors = colors or self._assign_colors(active_markers)
 
-        # Read each marker at the native pyramid level.
+        # Fill missing colors deterministically
+        while len(active_colors) < len(active_markers):
+            active_colors.append(self._default_color_for_marker(active_markers[len(active_colors)], len(active_colors)))
+
         # Coordinates in the native level space = full-res coords / native_downsample
-        native_x = full_x // native_downsample
-        native_y = full_y // native_downsample
+        native_x = int(math.floor(full_x / native_downsample))
+        native_y = int(math.floor(full_y / native_downsample))
         native_w = int(math.ceil(full_w / native_downsample))
         native_h = int(math.ceil(full_h / native_downsample))
 
-        channels_data = []
-        for marker in active_markers:
-            ch = self._read_marker_region(
+        channels_data: list[tuple[np.ndarray, str]] = []
+
+        for i, marker in enumerate(active_markers):
+            color = active_colors[i] if i < len(active_colors) else self._default_color_for_marker(marker, i)
+
+            display = self.get_channel_display(marker=marker, color=color)
+
+            vmin = mins[i] if mins and i < len(mins) else display.min
+            vmax = maxs[i] if maxs and i < len(maxs) else display.max
+            gamma = gammas[i] if gammas and i < len(gammas) else display.gamma
+
+            raw = self._read_marker_region(
                 marker,
                 x=native_x,
                 y=native_y,
@@ -138,16 +207,20 @@ class QptiffDZ:
                 height=native_h,
                 level=native_level,
             )
-            ch = self._normalize_to_uint8(ch)
-            channels_data.append(ch)
 
-        # Composite into RGB — each marker contributes to its assigned color channel(s)
-        first_shape = channels_data[0].shape if channels_data else (1, 1)
-        rgb = np.zeros((*first_shape, 3), dtype=np.uint8)
-        for ch_data, color in zip(channels_data, active_colors):
-            target_channels = self.COLOR_CHANNELS.get(color, [0, 1, 2])
-            for c in target_channels:
-                rgb[..., c] = np.maximum(rgb[..., c], ch_data)
+            ch_u8 = self._apply_display_range(raw, vmin, vmax, gamma)
+            channels_data.append((ch_u8, color))
+
+        # Additive compositing with clipping — looks more natural for multiplex IF
+        first_shape = channels_data[0][0].shape if channels_data else (1, 1)
+        rgb_float = np.zeros((*first_shape, 3), dtype=np.float32)
+
+        for ch_data, color_hex in channels_data:
+            color_rgb = self._hex_to_rgb01(color_hex)
+            ch_float = ch_data.astype(np.float32) / 255.0
+            rgb_float += ch_float[..., None] * color_rgb[None, None, :]
+
+        rgb = (np.clip(rgb_float, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
 
         img = Image.fromarray(rgb, mode="RGB")
 
@@ -163,9 +236,8 @@ class QptiffDZ:
 
     def thumbnail_jpeg(self, max_px: int = 512) -> bytes:
         """
-        Generate a thumbnail by reading from the most appropriate native
-        pyramid level and applying per-block normalization with gamma
-        correction for visibility of sparse fluorescence signal.
+        Generate a thumbnail using stable global display ranges,
+        consistent with tile rendering.
         """
         # Compute the target downsample from full resolution
         target_downsample = max(self.width, self.height) / max_px
@@ -173,20 +245,19 @@ class QptiffDZ:
         # Find the native level whose downsample best matches our target
         best_level = min(
             range(self._native_levels),
-            key=lambda n: abs(target_downsample - 2 ** n),
+            key=lambda n: abs(target_downsample - self._native_downsample_for_level(n)),
         )
-        best_downsample = 2 ** best_level
 
-        # Dimensions at this native level
-        level_w = max(1, int(math.ceil(self.width / best_downsample)))
-        level_h = max(1, int(math.ceil(self.height / best_downsample)))
+        level_w, level_h = self._native_level_shapes[best_level]
 
-        # Use 256x256 blocks for per-block normalization
-        block_size = 256
+        rendered: list[tuple[np.ndarray, str]] = []
 
-        norm_channels = []
-        for marker in self.markers:
-            ch = self._read_marker_region(
+        for i, marker in enumerate(self.markers):
+            color = self.colors[i] if i < len(self.colors) else self._default_color_for_marker(marker, i)
+
+            display = self.get_channel_display(marker=marker, color=color)
+
+            raw = self._read_marker_region(
                 marker,
                 x=0,
                 y=0,
@@ -194,79 +265,142 @@ class QptiffDZ:
                 height=level_h,
                 level=best_level,
             )
-            ch_float = ch.astype(np.float32)
-            ch_norm = np.zeros_like(ch_float)
 
-            # Per-block percentile normalization for local contrast
-            # Uses 0-99% range to avoid outlier-driven compression
-            for by in range(0, level_h, block_size):
-                bh = min(block_size, level_h - by)
-                for bx in range(0, level_w, block_size):
-                    bw = min(block_size, level_w - bx)
-                    block = ch_float[by:by + bh, bx:bx + bw]
-                    lo, hi = np.percentile(block, [0, 99])
-                    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
-                        lo = float(np.nanmin(block))
-                        hi = float(np.nanmax(block))
-                    if hi > lo:
-                        ch_norm[by:by + bh, bx:bx + bw] = (
-                            np.clip((block - lo) / (hi - lo), 0, 1)
-                        )
-            norm_channels.append((ch_norm * 255).astype(np.uint8))
+            ch_u8 = self._apply_display_range(raw, display.min, display.max, display.gamma)
+            rendered.append((ch_u8, display.color))
 
-        first_shape = norm_channels[0].shape if norm_channels else (1, 1)
-        rgb = np.zeros((*first_shape, 3), dtype=np.uint8)
-        for ch_data, color in zip(norm_channels, self.colors):
-            target_channels = self.COLOR_CHANNELS.get(color, [0, 1, 2])
-            for c in target_channels:
-                rgb[..., c] = np.maximum(rgb[..., c], ch_data)
+        # Additive compositing
+        first_shape = rendered[0][0].shape if rendered else (1, 1)
+        rgb_float = np.zeros((*first_shape, 3), dtype=np.float32)
+
+        for ch_data, color_hex in rendered:
+            color_rgb = self._hex_to_rgb01(color_hex)
+            ch_float = ch_data.astype(np.float32) / 255.0
+            rgb_float += ch_float[..., None] * color_rgb[None, None, :]
+
+        rgb = (np.clip(rgb_float, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
 
         img = Image.fromarray(rgb, mode="RGB")
 
-        # Final resize to exactly max_px on the longest side
         img.thumbnail((max_px, max_px), Image.Resampling.BILINEAR)
-
-        # Apply gamma correction to make sparse fluorescence signal visible
-        arr = np.array(img, dtype=np.float32) / 255.0
-        arr = np.power(arr, 0.3)  # gamma = 0.3 brightens dark regions
-        img = Image.fromarray((np.clip(arr, 0, 1) * 255).astype(np.uint8), mode="RGB")
 
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         return buf.getvalue()
 
     # ------------------------------------------------------------------ #
+    # Public display range API
+    # ------------------------------------------------------------------ #
+
+    def get_channel_display(
+        self,
+        marker: str,
+        color: str | None = None,
+        gamma: float = 1.0,
+    ) -> ChannelDisplay:
+        """
+        Return stable display settings for one marker.
+        The min/max are computed once and reused.
+        """
+        cache_key = marker
+
+        if cache_key in self._display_cache:
+            cached = self._display_cache[cache_key]
+            if color is None or color == cached.color:
+                return cached
+
+        vmin, vmax = self._estimate_global_range(marker)
+
+        display = ChannelDisplay(
+            marker=marker,
+            color=color or self._default_color_for_marker(marker, 0),
+            min=vmin,
+            max=vmax,
+            gamma=gamma,
+        )
+
+        self._display_cache[cache_key] = display
+        return display
+
+    def get_all_channel_displays(self) -> dict[str, dict]:
+        """Return display settings for all markers (for API responses)."""
+        result = {}
+        for i, marker in enumerate(self.get_markers()):
+            default_color = self._default_color_for_marker(marker, i)
+            display = self.get_channel_display(marker=marker, color=default_color)
+            result[marker] = {
+                "color": display.color,
+                "min": display.min,
+                "max": display.max,
+                "gamma": display.gamma,
+            }
+        return result
+
+    # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
 
-    def _detect_native_levels(self) -> int:
-        """Detect the number of actual pyramid levels in the QPTIFF file."""
+    def _detect_native_level_shapes(self) -> list[tuple[int, int]]:
+        """
+        Return native pyramid level shapes as [(width, height), ...].
+        """
         try:
             s0 = self.mx.series[0]
             if hasattr(s0, "levels") and s0.levels:
-                return len(s0.levels)
-            if hasattr(s0, "is_pyramidal") and s0.is_pyramidal:
-                return len(s0.levels)
+                shapes = []
+                for level in s0.levels:
+                    shape = level.shape
+                    if len(shape) >= 2:
+                        shapes.append((int(shape[-1]), int(shape[-2])))
+                if shapes:
+                    return shapes
         except Exception:
             pass
-        return 1
 
-    def _dzi_to_native_level(self, dzi_level: int) -> tuple[int, int]:
+        # Fallback from series[0].shape
+        try:
+            shape = self.mx.series[0].shape
+            if len(shape) >= 2:
+                return [(int(shape[-1]), int(shape[-2]))]
+        except Exception:
+            pass
+
+        # Last resort: read first marker
+        markers = self.get_markers()
+        if not markers:
+            raise ValueError(f"No markers found in multiplex TIFF: {self.path}")
+
+        arr = np.asarray(self.mx.read_region(markers[0]))
+        if arr.ndim < 2:
+            raise ValueError(f"Could not infer dimensions from marker {markers[0]}")
+
+        return [(int(arr.shape[-1]), int(arr.shape[-2]))]
+
+    def _native_downsample_for_level(self, native_level: int) -> float:
+        full_w, full_h = self._native_level_shapes[0]
+        level_w, level_h = self._native_level_shapes[native_level]
+
+        ds_x = full_w / max(1, level_w)
+        ds_y = full_h / max(1, level_h)
+
+        return float((ds_x + ds_y) / 2.0)
+
+    def _dzi_to_native_level(self, dzi_level: int) -> tuple[int, float]:
         """
         Translate DZI level to the closest native pyramid level.
 
-        Returns (native_level, native_downsample_from_full_res).
+        Returns:
+            native_level,
+            native_downsample_from_full_resolution
         """
         dzi_downsample = 2 ** (self.max_dzi_level - dzi_level)
 
-        # Find the native level whose downsample is closest to what we need
         best = min(
             range(self._native_levels),
-            key=lambda n: abs(dzi_downsample - 2 ** n),
+            key=lambda n: abs(dzi_downsample - self._native_downsample_for_level(n)),
         )
 
-        actual_downsample = 2 ** best
-        return best, actual_downsample
+        return best, self._native_downsample_for_level(best)
 
     def _read_marker_region(
         self,
@@ -281,15 +415,91 @@ class QptiffDZ:
         Read a region of a single marker channel at a given pyramid level.
 
         Coordinates are in the level's own coordinate space.
-        Single call — no fallback loops or full-channel reads.
+        Thread-safe via RLock.
         """
-        arr = np.asarray(self.mx.read_region(
-            marker,
-            pos=(x, y),
-            shape=(width, height),
-            level=level,
-        ))
+        with self._read_lock:
+            arr = np.asarray(self.mx.read_region(
+                marker,
+                pos=(x, y),
+                shape=(width, height),
+                level=level,
+            ))
         return self._squeeze_to_2d(arr)
+
+    def _estimate_global_range(self, marker: str) -> tuple[float, float]:
+        """
+        Estimate a stable display range for a marker using a low-resolution
+        native pyramid level or sampled data.
+
+        This must not depend on the requested tile.
+        """
+        # Prefer a reasonably small native level for fast global statistics.
+        # Aim for <= about 2 million pixels.
+        target_pixels = 2_000_000
+
+        candidate_levels = list(range(self._native_levels))
+        best_level = candidate_levels[-1]
+
+        for level in candidate_levels:
+            w, h = self._native_level_shapes[level]
+            if w * h <= target_pixels:
+                best_level = level
+                break
+
+        level_w, level_h = self._native_level_shapes[best_level]
+
+        arr = self._read_marker_region(
+            marker,
+            x=0,
+            y=0,
+            width=level_w,
+            height=level_h,
+            level=best_level,
+        )
+
+        arr = np.asarray(arr, dtype=np.float32)
+        arr = arr[np.isfinite(arr)]
+
+        if arr.size == 0:
+            return 0.0, 1.0
+
+        # Ignore zeros for sparse fluorescence if enough non-zero pixels exist.
+        nonzero = arr[arr > 0]
+        sample = nonzero if nonzero.size > 1000 else arr
+
+        lo, hi = np.percentile(sample, [0.1, 99.8])
+
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            lo = float(np.nanmin(sample))
+            hi = float(np.nanmax(sample))
+
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            return 0.0, 1.0
+
+        return float(lo), float(hi)
+
+    @staticmethod
+    def _apply_display_range(
+        arr: np.ndarray,
+        vmin: float,
+        vmax: float,
+        gamma: float = 1.0,
+    ) -> np.ndarray:
+        """
+        Convert raw marker intensities to uint8 using fixed display settings.
+        """
+        arr = np.asarray(arr, dtype=np.float32)
+
+        if arr.size == 0 or vmax <= vmin:
+            return np.zeros(arr.shape, dtype=np.uint8)
+
+        arr = (arr - vmin) / (vmax - vmin)
+        arr = np.clip(arr, 0.0, 1.0)
+
+        if gamma != 1.0 and gamma > 0:
+            arr = np.power(arr, gamma)
+
+        return (arr * 255.0 + 0.5).astype(np.uint8)
 
     @staticmethod
     def _squeeze_to_2d(arr: np.ndarray) -> np.ndarray:
@@ -308,36 +518,62 @@ class QptiffDZ:
         raise ValueError(f"Expected 2D marker image, got shape {arr.shape}")
 
     @staticmethod
-    def _normalize_to_uint8(arr: np.ndarray) -> np.ndarray:
-        """Robustly map fluorescence intensities to uint8 using percentile normalization."""
-        arr = np.asarray(arr)
+    def _marker_key(marker: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", marker.lower())
 
-        if arr.size == 0:
-            return np.zeros((1, 1), dtype=np.uint8)
+    @classmethod
+    def _default_color_for_marker(cls, marker: str, index: int) -> str:
+        key = cls._marker_key(marker)
 
-        arr = arr.astype(np.float32, copy=False)
+        # Direct normalized match
+        if key in cls.DEFAULT_MARKER_COLORS:
+            return cls.DEFAULT_MARKER_COLORS[key]
 
-        lo, hi = np.percentile(arr, [1.0, 99.8])
-        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
-            lo = float(np.nanmin(arr))
-            hi = float(np.nanmax(arr))
+        # Loose contains match for marker names like "Opal 570 CD3"
+        for known, color in cls.DEFAULT_MARKER_COLORS.items():
+            if known and known in key:
+                return color
 
-        if hi <= lo:
-            return np.zeros(arr.shape, dtype=np.uint8)
+        return cls.PALETTE_HEX[index % len(cls.PALETTE_HEX)]
 
-        arr = (arr - lo) / (hi - lo)
-        arr = np.clip(arr, 0, 1)
-        return (arr * 255).astype(np.uint8)
+    @staticmethod
+    def _hex_to_rgb01(color: str) -> np.ndarray:
+        color = color.strip()
+        if not color.startswith("#"):
+            # Backward compatibility for old query params.
+            named = {
+                "red": "#ff0000",
+                "green": "#00ff00",
+                "blue": "#3366ff",
+                "cyan": "#00ffff",
+                "magenta": "#ff00ff",
+                "yellow": "#ffff00",
+                "orange": "#ff9900",
+                "lime": "#66ff66",
+                "purple": "#cc66ff",
+                "teal": "#00cccc",
+                "white": "#ffffff",
+                "gray": "#808080",
+                "grey": "#808080",
+            }
+            color = named.get(color.lower(), "#ffffff")
+
+        color = color.lstrip("#")
+        if len(color) != 6:
+            color = "ffffff"
+
+        return np.array(
+            [
+                int(color[0:2], 16) / 255.0,
+                int(color[2:4], 16) / 255.0,
+                int(color[4:6], 16) / 255.0,
+            ],
+            dtype=np.float32,
+        )
 
     def _assign_colors(self, markers: list[str]) -> list[str]:
-        """Assign a color from the palette to each marker."""
-        colors = []
-        for i, m in enumerate(markers):
-            if m.upper() in ("DAPI", "HOECHST", "HOECHST 33342"):
-                colors.append("blue")
-            else:
-                colors.append(self.PALETTE[i % len(self.PALETTE)])
-        return colors
+        """Assign a hex color from the palette to each marker."""
+        return [self._default_color_for_marker(marker, i) for i, marker in enumerate(markers)]
 
     def _default_markers(self) -> list[str]:
         markers = self.get_markers()
@@ -358,23 +594,3 @@ class QptiffDZ:
                 break
 
         return preferred[:3]
-
-    def _detect_full_resolution_size(self) -> tuple[int, int]:
-        # Try mx.series[0] shape first (most reliable for QPTIFFs)
-        try:
-            s0 = self.mx.series[0]
-            shape = s0.shape
-            if len(shape) >= 2:
-                return int(shape[-1]), int(shape[-2])  # (W, H) from (..., H, W)
-        except Exception:
-            pass
-
-        # Fallback: read the first marker at level 0
-        arr = self.mx.read_region(self.markers[0])
-        arr = np.asarray(arr)
-
-        if arr.ndim < 2:
-            raise ValueError(f"Could not infer dimensions from marker {self.markers[0]}")
-
-        h, w = int(arr.shape[-2]), int(arr.shape[-1])
-        return w, h

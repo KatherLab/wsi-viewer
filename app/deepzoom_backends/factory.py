@@ -25,14 +25,16 @@ def make_dz_backend(
     Factory used by FastAPI routes.
 
     For QPTIFF:
-        returns QptiffDZ(path) from qptiff_pool or fresh
+        returns QptiffDZ(path) from qptiff_pool or fresh.
+        Note: markers/colors are only used when creating a NEW QptiffDZ
+        outside the pool (pool instances use defaults).
 
     For OpenSlide-readable files:
         returns DZ(OpenSlide handle)
     """
     if is_qptiff(path):
         if qptiff_pool is not None:
-            return qptiff_pool.get(path, markers=markers, colors=colors)
+            return qptiff_pool.get(path)
         return QptiffDZ(path, tile_size=tile_size, overlap=overlap, markers=markers, colors=colors)
 
     if slide_pool is None:

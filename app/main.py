@@ -843,6 +843,18 @@ async def dzi_xml(slide_id: str, request: Request):
         log.exception("DZI XML generation failed for %s: %s", p, e)
         raise HTTPException(500, "Failed to build DZI descriptor")
 
+def _parse_float_list(value: Optional[str]) -> list[float] | None:
+    if not value:
+        return None
+    out = []
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        out.append(float(item))
+    return out or None
+
+
 @app.get("/dzi/{slide_id}_files/{level}/{x}_{y}.jpeg")
 async def dzi_tile(
     slide_id: str,
@@ -852,6 +864,9 @@ async def dzi_tile(
     request: Request,
     channels: Optional[str] = None,
     colors: Optional[str] = None,
+    mins: Optional[str] = None,
+    maxs: Optional[str] = None,
+    gammas: Optional[str] = None,
 ):
     async with tile_semaphore:
         request_id = id(request)
@@ -872,6 +887,10 @@ async def dzi_tile(
         if colors:
             colors_list = [c.strip() for c in colors.split(",") if c.strip()]
 
+        mins_list = _parse_float_list(mins)
+        maxs_list = _parse_float_list(maxs)
+        gammas_list = _parse_float_list(gammas)
+
         etag = _etag_stable(
             "tile",
             backend_key,
@@ -882,6 +901,9 @@ async def dzi_tile(
             mtime_str,
             channels or "",
             colors or "",
+            mins or "",
+            maxs or "",
+            gammas or "",
         )
 
         if request.headers.get("If-None-Match") == etag:
@@ -894,7 +916,7 @@ async def dzi_tile(
                 }
             )
 
-        ck = Cache.key("tile", backend_key, slide_id, str(level), str(x), str(y), channels or "", colors or "")
+        ck = Cache.key("tile", backend_key, slide_id, str(level), str(x), str(y), channels or "", colors or "", mins or "", maxs or "", gammas or "")
         try:
             raw = cache.get(ck)
         except Exception:
@@ -925,7 +947,7 @@ async def dzi_tile(
                 raise HTTPException(404, "Invalid level")
             try:
                 if is_multiplex_tiff(p):
-                    return dz.tile_jpeg(level, x, y, channels=channels_list, colors=colors_list)
+                    return dz.tile_jpeg(level, x, y, channels=channels_list, colors=colors_list, mins=mins_list, maxs=maxs_list, gammas=gammas_list)
                 return dz.tile_jpeg(level, x, y)
             except Exception:
                 raise HTTPException(404, f"Tile not found at level {level}, ({x},{y})")
@@ -979,18 +1001,21 @@ async def api_markers(slide_id: str):
             marker_colors[marker] = active_colors[i] if i < len(active_colors) else "gray"
         # Assign colors to any markers not in the active set
         assigned = set(active_markers)
-        palette = QptiffDZ.PALETTE
+        palette = QptiffDZ.PALETTE_HEX
         palette_idx = len(active_markers)
         for marker in markers:
             if marker not in assigned:
                 marker_colors[marker] = palette[palette_idx % len(palette)]
                 palette_idx += 1
+        # Stable per-marker display settings
+        channel_displays = dz.get_all_channel_displays()
         return {
             "backend": "mxtifffile",
             "format": dz.get_format_id(),
             "markers": markers,
             "default_markers": active_markers,
             "marker_colors": marker_colors,
+            "channel_displays": channel_displays,
             "dimensions": {"width": dz.width, "height": dz.height},
             "level_count": dz.level_count,
         }
@@ -1023,16 +1048,19 @@ async def api_qptiff_channels(slide_id: str):
             marker_colors[marker] = active_colors[i] if i < len(active_colors) else "gray"
         # Assign colors to any markers not in the active set
         assigned = set(active_markers)
-        palette = QptiffDZ.PALETTE
+        palette = QptiffDZ.PALETTE_HEX
         palette_idx = len(active_markers)
         for marker in markers:
             if marker not in assigned:
                 marker_colors[marker] = palette[palette_idx % len(palette)]
                 palette_idx += 1
+        # Stable per-marker display settings
+        channel_displays = dz.get_all_channel_displays()
         return {
             "markers": markers,
             "default_markers": active_markers,
             "marker_colors": marker_colors,
+            "channel_displays": channel_displays,
             "dimensions": {"width": dz.width, "height": dz.height},
             "level_count": dz.level_count,
             "format_id": dz.get_format_id(),

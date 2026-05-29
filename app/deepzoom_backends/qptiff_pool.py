@@ -13,6 +13,9 @@ class QptiffPool:
 
     Avoids re-opening MxTiffFile on every request.
     Matches the SlidePool pattern used for OpenSlide handles.
+
+    Pooled handles do NOT carry request-specific markers/colors —
+    those are passed at the tile_jpeg() call site.
     """
 
     def __init__(self, max_handles: int = 8, tile_size: int = 256, overlap: int = 0):
@@ -22,12 +25,7 @@ class QptiffPool:
         self._tile_size = tile_size
         self._overlap = overlap
 
-    def get(
-        self,
-        path: Path,
-        markers: list[str] | None = None,
-        colors: list[str] | None = None,
-    ) -> QptiffDZ:
+    def get(self, path: Path) -> QptiffDZ:
         key = str(path)
         with self._lock:
             if key in self._handles:
@@ -39,8 +37,6 @@ class QptiffPool:
             path,
             tile_size=self._tile_size,
             overlap=self._overlap,
-            markers=markers,
-            colors=colors,
         )
 
         with self._lock:
