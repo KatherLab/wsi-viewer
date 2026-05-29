@@ -26,7 +26,7 @@ from .config import AppCfg
 from .cache import make_cache, Cache
 from .fs_index import scan_directory_shallow_optimized, stable_id_from_path, build_tree_shallow, nfs_probe
 from .thumbs import make_preview_bytes
-from .dz import DZ
+from .dz import DZ, MxTiffDZ, QptiffDZ, QptiffPool, is_multiplex_tiff, make_dz
 from .models import SlideMeta, Node
 from .path_cache import PathCache
 
@@ -102,6 +102,7 @@ class SlidePool:
             self._handles.clear()
 
 slide_pool = SlidePool(max_handles=24)
+qptiff_pool = QptiffPool(max_handles=8)
 
 
 # Connection limits for concurrent requests
@@ -252,6 +253,7 @@ async def lifespan(app: FastAPI):
     log.info("Shutting down...")
     save_path_cache()
     slide_pool.close_all()
+    qptiff_pool.close_all()
     executor.shutdown(wait=False, cancel_futures=True)
 
 app = FastAPI(title="WSI Browser", version="0.1", lifespan=lifespan)
@@ -392,7 +394,7 @@ async def run_with_timeout(func, *args, timeout=30, **kwargs):
 # Routes
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "roots": ROOTS})
+    return templates.TemplateResponse(request, "index.html", {"roots": ROOTS})
 
 @app.get("/api/tree")
 async def api_tree():
@@ -648,14 +650,21 @@ async def api_thumb(slide_id: str, request: Request):
 
         try:
             timeout = 10 if priority > 500 else 15
-            img = await run_with_timeout(
-                make_preview_bytes,
-                p,
-                cfg.thumbnails.max_px,
-                cfg.thumbnails.prefer_associated,
-                slide_pool,
-                timeout=timeout
-            )
+            if is_multiplex_tiff(p):
+                def make_mxtiff_thumb():
+                    dz = qptiff_pool.get(p)
+                    return dz.thumbnail_jpeg(cfg.thumbnails.max_px)
+
+                img = await run_with_timeout(make_mxtiff_thumb, timeout=timeout)
+            else:
+                img = await run_with_timeout(
+                    make_preview_bytes,
+                    p,
+                    cfg.thumbnails.max_px,
+                    cfg.thumbnails.prefer_associated,
+                    slide_pool,
+                    timeout=timeout,
+                )
 
         except Exception as e:
             log.exception("Preview generation failed for %s: %s", p, e)
@@ -680,6 +689,29 @@ async def api_meta(slide_id: str):
         raise HTTPException(404, "Slide not found")
 
     def get_metadata():
+        if is_multiplex_tiff(p):
+            dz = qptiff_pool.get(p)
+
+            try:
+                file_size = p.stat().st_size
+            except Exception:
+                file_size = None
+
+            return SlideMeta(
+                id=slide_id,
+                name=p.name,
+                path=str(p),
+                width=dz.width,
+                height=dz.height,
+                vendor="QPTIFF / mxtifffile",
+                objective_power=None,
+                level_count=dz.level_count,
+                mpp_x=None,
+                mpp_y=None,
+                created_ts=p.stat().st_mtime,
+                file_size=file_size,
+            )
+
         slide = slide_pool.get(p)
         try:
             mpp_x_raw = slide.properties.get(openslide.PROPERTY_NAME_MPP_X, 0)
@@ -727,6 +759,8 @@ async def api_associated_list(slide_id: str):
         raise HTTPException(404, "Slide not found")
 
     def get_associated():
+        if is_multiplex_tiff(p):
+            return []
         slide = slide_pool.get(p)
         return list(slide.associated_images.keys())
 
@@ -745,6 +779,8 @@ async def api_associated_image(slide_id: str, image_name: str):
         raise HTTPException(404, "Slide not found")
 
     def get_image():
+        if is_multiplex_tiff(p):
+            return None
         slide = slide_pool.get(p)
         if image_name not in slide.associated_images:
             return None
@@ -793,8 +829,7 @@ async def dzi_xml(slide_id: str, request: Request):
         raise HTTPException(404, "Slide not found")
 
     def get_dzi():
-        s = slide_pool.get(p)
-        dz = DZ(s)
+        dz = make_dz(p, slide_pool)
         return dz.dzi_xml()
 
     try:
@@ -809,7 +844,15 @@ async def dzi_xml(slide_id: str, request: Request):
         raise HTTPException(500, "Failed to build DZI descriptor")
 
 @app.get("/dzi/{slide_id}_files/{level}/{x}_{y}.jpeg")
-async def dzi_tile(slide_id: str, level: int, x: int, y: int, request: Request):
+async def dzi_tile(
+    slide_id: str,
+    level: int,
+    x: int,
+    y: int,
+    request: Request,
+    channels: Optional[str] = None,
+    colors: Optional[str] = None,
+):
     async with tile_semaphore:
         request_id = id(request)
 
@@ -819,7 +862,27 @@ async def dzi_tile(slide_id: str, level: int, x: int, y: int, request: Request):
         except FileNotFoundError:
             raise HTTPException(404, "Slide not found")
 
-        etag = _etag_stable("tile", slide_id, str(level), str(x), str(y), mtime_str)
+        backend_key = "mxtiff" if is_multiplex_tiff(p_for_etag) else "openslide"
+
+        # Parse optional channel/color overrides
+        channels_list: list[str] | None = None
+        colors_list: list[str] | None = None
+        if channels:
+            channels_list = [c.strip() for c in channels.split(",") if c.strip()]
+        if colors:
+            colors_list = [c.strip() for c in colors.split(",") if c.strip()]
+
+        etag = _etag_stable(
+            "tile",
+            backend_key,
+            slide_id,
+            str(level),
+            str(x),
+            str(y),
+            mtime_str,
+            channels or "",
+            colors or "",
+        )
 
         if request.headers.get("If-None-Match") == etag:
             return Response(
@@ -831,7 +894,7 @@ async def dzi_tile(slide_id: str, level: int, x: int, y: int, request: Request):
                 }
             )
 
-        ck = Cache.key("tile", slide_id, str(level), str(x), str(y))
+        ck = Cache.key("tile", backend_key, slide_id, str(level), str(x), str(y), channels or "", colors or "")
         try:
             raw = cache.get(ck)
         except Exception:
@@ -854,11 +917,15 @@ async def dzi_tile(slide_id: str, level: int, x: int, y: int, request: Request):
         p = p_for_etag  # Already resolved above
 
         def get_tile():
-            s = slide_pool.get(p)
-            dz = DZ(s)
-            if level < 0 or level >= dz.dz.level_count:
+            if is_multiplex_tiff(p):
+                dz = qptiff_pool.get(p)
+            else:
+                dz = make_dz(p, slide_pool)
+            if level < 0 or level >= dz.level_count:
                 raise HTTPException(404, "Invalid level")
             try:
+                if is_multiplex_tiff(p):
+                    return dz.tile_jpeg(level, x, y, channels=channels_list, colors=colors_list)
                 return dz.tile_jpeg(level, x, y)
             except Exception:
                 raise HTTPException(404, f"Tile not found at level {level}, ({x},{y})")
@@ -886,6 +953,97 @@ async def dzi_tile(slide_id: str, level: int, x: int, y: int, request: Request):
             if "Tile not found" not in str(e):
                 log.exception("Tile generation failed for %s level %s (%s,%s): %s", slide_id, level, x, y, e)
             raise HTTPException(500, "Failed to generate tile")
+
+# --------------------------------------------------------------------------- #
+@app.get("/api/markers/{slide_id}")
+async def api_markers(slide_id: str):
+    try:
+        p = resolve_by_id_with_fallback(slide_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Slide not found")
+
+    if not is_multiplex_tiff(p):
+        return {
+            "backend": "openslide",
+            "markers": [],
+        }
+
+    def get_markers():
+        dz = qptiff_pool.get(p)
+        markers = dz.get_markers()
+        active_markers = dz.markers  # currently displayed markers (up to 3)
+        active_colors = dz.colors  # colors mapped to active markers
+        # Build a mapping of ALL markers → colors; use palette assignment for extras
+        marker_colors = {}
+        for i, marker in enumerate(active_markers):
+            marker_colors[marker] = active_colors[i] if i < len(active_colors) else "gray"
+        # Assign colors to any markers not in the active set
+        assigned = set(active_markers)
+        palette = QptiffDZ.PALETTE
+        palette_idx = len(active_markers)
+        for marker in markers:
+            if marker not in assigned:
+                marker_colors[marker] = palette[palette_idx % len(palette)]
+                palette_idx += 1
+        return {
+            "backend": "mxtifffile",
+            "format": dz.get_format_id(),
+            "markers": markers,
+            "default_markers": active_markers,
+            "marker_colors": marker_colors,
+            "dimensions": {"width": dz.width, "height": dz.height},
+            "level_count": dz.level_count,
+        }
+
+    try:
+        return await run_with_timeout(get_markers, timeout=10)
+    except Exception as e:
+        log.exception("Marker read failed for %s: %s", p, e)
+        raise HTTPException(500, "Failed to read markers")
+
+# --------------------------------------------------------------------------- #
+@app.get("/api/qptiff/{slide_id}/channels")
+async def api_qptiff_channels(slide_id: str):
+    """Returns marker/channel info for a QPTIFF slide."""
+    try:
+        p = resolve_by_id_with_fallback(slide_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Slide not found")
+
+    if not is_multiplex_tiff(p):
+        raise HTTPException(400, "Not a QPTIFF file")
+
+    def get_channels():
+        dz = qptiff_pool.get(p)
+        markers = dz.get_markers()
+        active_markers = dz.markers
+        active_colors = dz.colors
+        marker_colors = {}
+        for i, marker in enumerate(active_markers):
+            marker_colors[marker] = active_colors[i] if i < len(active_colors) else "gray"
+        # Assign colors to any markers not in the active set
+        assigned = set(active_markers)
+        palette = QptiffDZ.PALETTE
+        palette_idx = len(active_markers)
+        for marker in markers:
+            if marker not in assigned:
+                marker_colors[marker] = palette[palette_idx % len(palette)]
+                palette_idx += 1
+        return {
+            "markers": markers,
+            "default_markers": active_markers,
+            "marker_colors": marker_colors,
+            "dimensions": {"width": dz.width, "height": dz.height},
+            "level_count": dz.level_count,
+            "format_id": dz.get_format_id(),
+        }
+
+    try:
+        return await run_with_timeout(get_channels, timeout=10)
+    except Exception as e:
+        log.exception("Channels read failed for %s: %s", p, e)
+        raise HTTPException(500, "Failed to read channels")
+
 
 # --------------------------------------------------------------------------- #
 @app.get("/health")

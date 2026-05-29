@@ -116,6 +116,14 @@
     .label-image{width:100%;border-radius:8px;margin-top:10px;cursor:pointer}
     .toggle-sidebar{position:absolute;top:16px;right:16px;z-index:20;width:36px;height:36px;border-radius:8px;border:1px solid var(--border);background:rgba(255,255,255,.98);cursor:pointer;display:grid;place-items:center}
 
+    /* Marker legend */
+    .legend-section{margin-top:4px}
+    .legend-item{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:0.9rem}
+    .legend-swatch{width:14px;height:14px;border-radius:50%;flex-shrink:0;border:1px solid rgba(0,0,0,0.12)}
+    .legend-checkbox{width:16px;height:16px;cursor:pointer;accent-color:var(--accent);flex-shrink:0}
+    .legend-marker{color:#111827;font-weight:500}
+    .legend-colorname{color:var(--muted);font-size:0.8rem;margin-left:auto}
+
     /* Toolbar */
     .toolbar{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);display:flex;gap:.5rem;background:rgba(255,255,255,.98);border:1px solid var(--border);border-radius:999px;padding:.35rem .5rem;box-shadow:var(--shadow);z-index:15}
     .tb-btn{width:36px;height:36px;border-radius:50%;border:1px solid var(--border);background:#fff;color:#111827;cursor:pointer;display:grid;place-items:center;transition:all .15s}
@@ -448,6 +456,24 @@
             </div>
           </div>
 
+          <!-- Marker Legend (QPTIFF only) -->
+          <div class="info-section legend-section" v-if="qptiffAllMarkers.length > 0">
+            <h3 style="margin-bottom:8px">Marker Legend</h3>
+            <div v-for="marker in qptiffAllMarkers" :key="marker" class="legend-item">
+              <input type="checkbox"
+                     :checked="qptiffActiveMarkers.includes(marker)"
+                     @change="toggleQptiffChannel(marker)"
+                     class="legend-checkbox" />
+              <span class="legend-swatch"
+                    :style="{ background: cssColor(qptiffMarkerColors[marker] || 'gray') }"></span>
+              <span class="legend-marker">{{ marker }}</span>
+              <span v-if="qptiffMarkerColors[marker]" class="legend-colorname">
+                {{ qptiffMarkerColors[marker] }}
+              </span>
+              <span v-else class="legend-colorname">─</span>
+            </div>
+          </div>
+
           <div class="info-section" v-if="associatedImages && associatedImages.length">
             <h3>Associated Images</h3>
             <div v-for="img in associatedImages" :key="img.name" style="margin-bottom:10px">
@@ -585,13 +611,17 @@ const app = createApp({
       itemsPerPage:50,
       
       // Viewer
-      osd:null, 
-      current:null, 
+      osd:null,
+      current:null,
       mpp:null,
-      hasScale:false, 
+      hasScale:false,
       showSidebar:true,
       slideMeta:null,
       associatedImages:[],
+      qptiffMarkers: [],      // all available markers
+      qptiffMarkerColors: {}, // active marker → color mapping
+      qptiffActiveMarkers: [], // currently selected marker names (subset of qptiffMarkers)
+      qptiffAllMarkers: [],   // all available markers (for checkbox rendering)
       
       // UI state
       isFullscreen:false,
@@ -717,10 +747,16 @@ const app = createApp({
     baseName(name){ const i=name.lastIndexOf("."); return i>0 ? name.slice(0,i) : name },
     extName(name){ const i=name.lastIndexOf("."); return i>0 ? name.slice(i+1) : "" },
     extUpper(name){ return this.extName(name).toUpperCase() },
-    formatDate(ts){ 
+    formatDate(ts){
       if(!ts) return "";
       const d = new Date(ts * 1000);
       return d.toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'});
+    },
+    cssColor(name){
+      const map = { red:"#ef4444", green:"#22c55e", blue:"#3b82f6", gray:"#9ca3af",
+                    yellow:"#eab308", cyan:"#06b6d4", magenta:"#d946ef", orange:"#f97316",
+                    white:"#ffffff", black:"#111827" };
+      return map[name] || name;
     },
 
     ensureObserver() {
@@ -1119,7 +1155,28 @@ const app = createApp({
 
       
       this.associatedImages = [];
-      
+      this.qptiffMarkers = [];
+      this.qptiffMarkerColors = {};
+      this.qptiffActiveMarkers = [];
+      this.qptiffAllMarkers = [];
+
+      // Load QPTIFF marker info (only for multiplex TIFFs)
+      try {
+        const markerResp = await this.makeRequest("/api/markers/" + id, 800);
+        if (markerResp.ok) {
+          const markerData = await markerResp.json();
+          if (markerData.backend === "mxtifffile" && markerData.markers && markerData.markers.length) {
+            this.qptiffMarkers = markerData.markers;
+            this.qptiffMarkerColors = markerData.marker_colors || {};
+            this.qptiffAllMarkers = markerData.markers;
+            // Initial active set = ALL markers with colors
+            this.qptiffActiveMarkers = Object.keys(markerData.marker_colors || {});
+          }
+        }
+      } catch(e) {
+        // Not a QPTIFF or request failed — that's fine
+      }
+
       // Load associated images
       try {
         const assocResp = await this.makeRequest("/api/associated/" + id, 500);
@@ -1134,23 +1191,49 @@ const app = createApp({
         console.log("Could not load associated images:", e);
       }
       
+      // Determine if this is a QPTIFF slide (has markers)
+      const isQptiff = this.qptiffAllMarkers.length > 0;
+
       if(this.osd){ this.osd.destroy(); this.osd=null }
-      this.osd = OpenSeadragon({
-        id:"osd",
-        tileSources:"/dzi/" + id + ".dzi",
-        showNavigator:true,
-        navigatorPosition: 'BOTTOM_RIGHT',
-        navigatorSizeRatio: 0.15,
-        showZoomControl:false,
-        showHomeControl:false,
-        showFullPageControl:false,
-        visibilityRatio:1,
-        minZoomLevel:0.001,
-        maxZoomLevel:40,
-        background:"#ffffff",
-        maxImageCacheCount: 100,
-        imageLoaderLimit: 4
-      });
+
+      if (isQptiff) {
+        // For QPTIFF, use custom tile source with channel query params
+        const tileSource = await this._buildQptiffTileSource(id);
+
+        this.osd = OpenSeadragon({
+          id:"osd",
+          tileSources:tileSource,
+          showNavigator:true,
+          navigatorPosition: 'BOTTOM_RIGHT',
+          navigatorSizeRatio: 0.15,
+          showZoomControl:false,
+          showHomeControl:false,
+          showFullPageControl:false,
+          visibilityRatio:1,
+          minZoomLevel:0.001,
+          maxZoomLevel:40,
+          background:"#ffffff",
+          maxImageCacheCount: 100,
+          imageLoaderLimit: 4
+        });
+      } else {
+        this.osd = OpenSeadragon({
+          id:"osd",
+          tileSources:"/dzi/" + id + ".dzi",
+          showNavigator:true,
+          navigatorPosition: 'BOTTOM_RIGHT',
+          navigatorSizeRatio: 0.15,
+          showZoomControl:false,
+          showHomeControl:false,
+          showFullPageControl:false,
+          visibilityRatio:1,
+          minZoomLevel:0.001,
+          maxZoomLevel:40,
+          background:"#ffffff",
+          maxImageCacheCount: 100,
+          imageLoaderLimit: 4
+        });
+      }
 
       // Attach the ruler only if slide scale is known
       this.$nextTick(() => {
@@ -1180,6 +1263,10 @@ const app = createApp({
       this.current = null;
       this.slideMeta = null;
       this.associatedImages = [];
+      this.qptiffMarkers = [];
+      this.qptiffMarkerColors = {};
+      this.qptiffActiveMarkers = [];
+      this.qptiffAllMarkers = [];
       this.hasScale = false;
       this.mpp = null;
 
@@ -1237,6 +1324,80 @@ const app = createApp({
     
     viewFullImage(url){
       window.open(url, '_blank');
+    },
+
+    // QPTIFF channel selection methods
+    toggleQptiffChannel(marker) {
+      const idx = this.qptiffActiveMarkers.indexOf(marker);
+      if (idx >= 0) {
+        this.qptiffActiveMarkers.splice(idx, 1);
+      } else {
+        this.qptiffActiveMarkers = [...this.qptiffActiveMarkers, marker];
+      }
+      // Always keep at least 1 marker active
+      if (this.qptiffActiveMarkers.length === 0) {
+        this.qptiffActiveMarkers = [marker];
+        return;
+      }
+      this.rebuildOsdTileSource();
+    },
+
+    async _buildQptiffTileSource(id) {
+      // Build query string from active channels
+      const active = this.qptiffActiveMarkers;
+      const colors = active.map(m => this.qptiffMarkerColors[m] || 'gray');
+      const qs = 'channels=' + encodeURIComponent(active.join(',')) +
+                 '&colors=' + encodeURIComponent(colors.join(','));
+
+      // Fetch DZI XML
+      const resp = await fetch('/dzi/' + id + '.dzi?' + qs);
+      const xmlText = await resp.text();
+      const parser = new DOMParser();
+      const xml = parser.parseFromString(xmlText, 'text/xml');
+      const image = xml.querySelector('Image');
+      const format = image.getAttribute('Format');
+      const tileSize = parseInt(image.getAttribute('TileSize'));
+      const overlap = parseInt(image.getAttribute('Overlap'));
+      const size = xml.querySelector('Size');
+
+      const maxLevel = this.slideMeta ? this.slideMeta.level_count - 1 : 0;
+
+      const baseUrl = '/dzi/' + id + '_files/';
+      const self = this;
+      return {
+        width: parseInt(size.getAttribute('Width')),
+        height: parseInt(size.getAttribute('Height')),
+        tileSize: tileSize,
+        tileOverlap: overlap,
+        minLevel: 0,
+        maxLevel: maxLevel,
+        getTileUrl: function(level, x, y) {
+          return baseUrl + level + '/' + x + '_' + y + '.' + format +
+                 '?channels=' + encodeURIComponent(self.qptiffActiveMarkers.join(',')) +
+                 '&colors=' + encodeURIComponent(self.qptiffActiveMarkers.map(m => self.qptiffMarkerColors[m] || 'gray').join(','));
+        }
+      };
+    },
+
+    async rebuildOsdTileSource() {
+      if (!this.osd || !this.current) return;
+
+      // Save current viewport state before replacing
+      const viewport = this.osd.viewport;
+      const currentZoom = viewport.getZoom(true);
+      const currentCenter = viewport.getCenter(true);
+
+      const tileSource = await this._buildQptiffTileSource(this.current);
+      this.osd.world.removeAll();
+      this.osd.addTiledImage({
+        tileSource,
+        preload: true,
+        success: () => {
+          // Restore viewport after new image is loaded
+          viewport.zoomTo(currentZoom, null, true);
+          viewport.panTo(currentCenter, true);
+        }
+      });
     },
   },
   

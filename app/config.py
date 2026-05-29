@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings
 import yaml
 
 
-DEFAULT_EXTS = [".svs", ".tif", ".tiff", ".ndpi", ".scn", ".mrxs", ".bif", ".czi", ".dcm", ".vms", ".vmu", ".svslide"]
+DEFAULT_EXTS = [".svs", ".tif", ".tiff", ".ndpi", ".scn", ".mrxs", ".bif", ".czi", ".dcm", ".vms", ".vmu", ".svslide", ".qptiff"]
 
 
 class CacheCfg(BaseModel):
@@ -41,5 +41,5 @@ class AppCfg(BaseSettings):
         data["extensions"] = exts
         # coerce paths
         for r in data.get("roots", []):
-            r["path"] = str(Path(r["path"]).resolve())
+            r["path"] = str(Path(r["path"]).expanduser().resolve())
         return AppCfg(**data)

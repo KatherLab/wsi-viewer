@@ -2,18 +2,21 @@
 name = "wsi-poc-viewer"
 version = "0.1.0"
 description = "Proof-of-concept WSI viewer with OpenSeadragon + scalebar"
-requires-python = ">=3.13,<4.0"
+requires-python = ">=3.13,<3.14"
 dependencies = [
   "fastapi",
   "uvicorn[standard]",
   "Pillow",
+  "numpy",
   "openslide-python",
   "openslide-bin",
   "jinja2",
   "python-multipart",
   "pydantic_settings",
   "pyyaml",
-  "redis"
+  "redis",
+  "tifffile",
+  "mxtifffile"
 ]
 
 [build-system]
