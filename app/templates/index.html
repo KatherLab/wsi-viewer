@@ -1372,11 +1372,6 @@ const app = createApp({
       } else {
         this.qptiffActiveMarkers = [...this.qptiffActiveMarkers, marker];
       }
-      // Always keep at least 1 marker active
-      if (this.qptiffActiveMarkers.length === 0) {
-        this.qptiffActiveMarkers = [marker];
-        return;
-      }
       this.rebuildOsdTileSource();
     },
 

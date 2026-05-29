@@ -885,9 +885,10 @@ async def dzi_tile(
         backend_key = "mxtiff" if is_multiplex_tiff(p_for_etag) else "openslide"
 
         # Parse optional channel/color overrides
+        # channels="" (empty) means "show nothing (black)". channels=None means "use defaults".
         channels_list: list[str] | None = None
         colors_list: list[str] | None = None
-        if channels:
+        if channels is not None:
             channels_list = [c.strip() for c in channels.split(",") if c.strip()]
         if colors:
             colors_list = [c.strip() for c in colors.split(",") if c.strip()]
@@ -904,7 +905,7 @@ async def dzi_tile(
             str(x),
             str(y),
             mtime_str,
-            channels or "",
+            str(channels_list),
             colors or "",
             mins or "",
             maxs or "",
@@ -921,7 +922,7 @@ async def dzi_tile(
                 }
             )
 
-        ck = Cache.key("tile", backend_key, slide_id, str(level), str(x), str(y), channels or "", colors or "", mins or "", maxs or "", gammas or "")
+        ck = Cache.key("tile", backend_key, slide_id, str(level), str(x), str(y), str(channels_list), colors or "", mins or "", maxs or "", gammas or "")
         try:
             raw = cache.get(ck)
         except Exception:

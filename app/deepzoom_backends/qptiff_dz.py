@@ -250,7 +250,8 @@ class QptiffDZ:
         full_h = min(full_h, self.height - full_y)
 
         # Which channels to use
-        active_markers = channels or self.markers
+        # channels=None means "use defaults"; channels=[] means "show nothing (black)"
+        active_markers = self.markers if channels is None else channels
         active_colors = colors or self._assign_colors(active_markers)
 
         # Fill missing colors deterministically
@@ -287,7 +288,16 @@ class QptiffDZ:
             channels_data.append((ch_u8, color))
 
         # Additive compositing with clipping — looks more natural for multiplex IF
-        first_shape = channels_data[0][0].shape if channels_data else (1, 1)
+        if not channels_data:
+            # No active channels → return a black tile
+            target_h = int(math.ceil(full_h / dzi_downsample))
+            target_w = int(math.ceil(full_w / dzi_downsample))
+            img = Image.new("RGB", (target_w, target_h), (0, 0, 0))
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            return buf.getvalue()
+
+        first_shape = channels_data[0][0].shape
         rgb_float = np.zeros((*first_shape, 3), dtype=np.float32)
 
         for ch_data, color_hex in channels_data:
@@ -404,12 +414,16 @@ class QptiffDZ:
         markers = self.get_markers()
 
         for i, marker in enumerate(markers):
-            default_color = self._default_color_for_marker(marker, i)
-            display = self.get_channel_display(marker=marker, color=default_color)
-
             idx = self._channel_lookup.get(marker)
             if idx is None:
                 idx = self._channel_lookup.get(self._marker_key(marker))
+
+            xml_color = None
+            if idx is not None and 0 <= idx < len(self._channel_infos):
+                xml_color = self._channel_infos[idx].color
+
+            default_color = xml_color or self._default_color_for_marker(marker, i)
+            display = self.get_channel_display(marker=marker, color=default_color)
 
             result[marker] = {
                 "index": idx,
