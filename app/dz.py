@@ -12,7 +12,7 @@ from PIL import Image
 # ------------------------------------------------------------------ #
 from .deepzoom_backends.qptiff_dz import QptiffDZ  # noqa: E402, F401
 from .deepzoom_backends.qptiff_pool import QptiffPool  # noqa: E402, F401
-from .deepzoom_backends.factory import make_dz_backend as make_dz, is_qptiff  # noqa: E402, F401
+from .deepzoom_backends.factory import make_dz_backend as make_dz, is_qptiff, probe_is_multiplex_tiff  # noqa: E402, F401
 
 # ------------------------------------------------------------------ #
 # Aliases for existing importers

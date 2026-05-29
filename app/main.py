@@ -4,7 +4,6 @@ import os
 import json
 import asyncio
 import time
-import pickle
 import hashlib
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -26,7 +25,8 @@ from .config import AppCfg
 from .cache import make_cache, Cache
 from .fs_index import scan_directory_shallow_optimized, stable_id_from_path, build_tree_shallow, nfs_probe
 from .thumbs import make_preview_bytes
-from .dz import DZ, MxTiffDZ, QptiffDZ, QptiffPool, is_multiplex_tiff, make_dz
+from .deepzoom_backends.factory import QPTIFF_EXTS
+from .dz import DZ, MxTiffDZ, QptiffDZ, QptiffPool, is_multiplex_tiff, probe_is_multiplex_tiff, make_dz
 from .models import SlideMeta, Node
 from .path_cache import PathCache
 
@@ -681,6 +681,11 @@ async def api_thumb(slide_id: str, request: Request):
             headers={"Cache-Control": "public, max-age=86400", "ETag": etag}
         )
 
+def _vendor_label(p: Path) -> str:
+    """Return an accurate vendor/label for a multiplex TIFF file."""
+    return "QPTIFF" if p.suffix.lower() in QPTIFF_EXTS else "Multiplex TIFF (mxtifffile)"
+
+
 @app.get("/api/meta/{slide_id}")
 async def api_meta(slide_id: str):
     try:
@@ -703,7 +708,7 @@ async def api_meta(slide_id: str):
                 path=str(p),
                 width=dz.width,
                 height=dz.height,
-                vendor="QPTIFF / mxtifffile",
+                vendor=_vendor_label(p),
                 objective_power=None,
                 level_count=dz.level_count,
                 mpp_x=None,
@@ -939,14 +944,14 @@ async def dzi_tile(
         p = p_for_etag  # Already resolved above
 
         def get_tile():
-            if is_multiplex_tiff(p):
+            if backend_key == "mxtiff":
                 dz = qptiff_pool.get(p)
             else:
                 dz = make_dz(p, slide_pool)
             if level < 0 or level >= dz.level_count:
                 raise HTTPException(404, "Invalid level")
             try:
-                if is_multiplex_tiff(p):
+                if backend_key == "mxtiff":
                     return dz.tile_jpeg(level, x, y, channels=channels_list, colors=colors_list, mins=mins_list, maxs=maxs_list, gammas=gammas_list)
                 return dz.tile_jpeg(level, x, y)
             except Exception:
@@ -1020,6 +1025,7 @@ async def api_markers(slide_id: str):
             "backend": "mxtifffile",
             "format": dz.get_format_id(),
             "markers": markers,
+            "channels": dz.get_channel_infos(),
             "default_markers": active_markers,
             "marker_colors": marker_colors,
             "channel_displays": channel_displays,
@@ -1065,6 +1071,7 @@ async def api_qptiff_channels(slide_id: str):
         channel_displays = dz.get_all_channel_displays()
         return {
             "markers": markers,
+            "channels": dz.get_channel_infos(),
             "default_markers": active_markers,
             "marker_colors": marker_colors,
             "channel_displays": channel_displays,

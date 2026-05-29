@@ -1,15 +1,122 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+import numpy as np
 
 from .qptiff_dz import QptiffDZ
 from .qptiff_pool import QptiffPool
 
+log = logging.getLogger("wsi-browser.deepzoom.factory")
+
 QPTIFF_EXTS = {".qptiff"}
+TIFF_EXTS = {".tif", ".tiff"}
+MULTIPLEX_TIFF_EXTS = QPTIFF_EXTS | TIFF_EXTS
+
+
+def _looks_like_vectra_component_metadata(text: str) -> bool:
+    """
+    Metadata-only check for Vectra/PerkinElmer/Akoya unmixed component TIFFs.
+
+    Keep this intentionally conservative. dtype=float32 alone is not enough,
+    because many unrelated scientific TIFFs are float images.
+    """
+    if not text:
+        return False
+
+    needles = (
+        "IsUnmixedComponent",
+        "<IsUnmixedComponent>",
+        "UnmixedComponent",
+        "PerkinElmer",
+        "Akoya",
+        "Vectra",
+        "Nuance",
+        "QPTIFF",
+        "QPI",
+    )
+    return any(n in text for n in needles)
+
+
+def probe_is_multiplex_tiff(path: Path) -> bool:
+    """
+    Return True if this path should be handled by QptiffDZ/mxtifffile.
+
+    For .qptiff we accept the extension.
+
+    For .tif/.tiff we inspect metadata. This prevents normal RGB WSI TIFFs
+    from being incorrectly routed away from OpenSlide.
+    """
+    ext = path.suffix.lower()
+
+    if ext in QPTIFF_EXTS:
+        return True
+
+    if ext not in TIFF_EXTS:
+        return False
+
+    try:
+        import tifffile
+    except Exception as e:
+        log.warning("tifffile is unavailable; cannot probe %s as multiplex TIFF: %s", path, e)
+        return False
+
+    try:
+        with tifffile.TiffFile(str(path)) as tif:
+            descs: list[str] = []
+
+            # Inspect a small number of pages only; no pixel read.
+            for page in tif.pages[: min(len(tif.pages), 16)]:
+                tag = page.tags.get("ImageDescription") or page.tags.get(270)
+                if tag is not None:
+                    try:
+                        descs.append(str(tag.value))
+                    except Exception:
+                        pass
+
+            joined = "\n".join(descs)
+
+            if not _looks_like_vectra_component_metadata(joined):
+                return False
+
+            # Metadata says this is relevant. Validate that shape/dtype look
+            # compatible with fluorescence channels.
+            try:
+                series = tif.series[0]
+                dtype = series.dtype
+                shape = series.shape
+                axes = getattr(series, "axes", "") or ""
+
+                has_image_axes = "Y" in axes and "X" in axes
+                has_channel_axis = "C" in axes or len(shape) >= 3
+                intensity_dtype = dtype in (
+                    np.float32,
+                    np.float16,
+                    np.uint16,
+                    np.uint32,
+                    np.uint8,
+                )
+
+                return bool(has_image_axes and has_channel_axis and intensity_dtype)
+            except Exception:
+                # If the metadata is a strong Vectra/QPTIFF marker, still let
+                # mxtifffile attempt to open it.
+                return True
+
+    except Exception as e:
+        log.debug("Multiplex TIFF probe failed for %s: %s", path, e)
+        return False
 
 
 def is_qptiff(path: Path) -> bool:
-    return path.suffix.lower() in QPTIFF_EXTS
+    """
+    Backward-compatible name used by existing imports.
+
+    Despite the name, this now means:
+    'should this file use the multiplex mxtifffile backend?'
+    """
+    return probe_is_multiplex_tiff(path)
 
 
 def make_dz_backend(
@@ -24,10 +131,8 @@ def make_dz_backend(
     """
     Factory used by FastAPI routes.
 
-    For QPTIFF:
+    For QPTIFF / Vectra component TIFF:
         returns QptiffDZ(path) from qptiff_pool or fresh.
-        Note: markers/colors are only used when creating a NEW QptiffDZ
-        outside the pool (pool instances use defaults).
 
     For OpenSlide-readable files:
         returns DZ(OpenSlide handle)
@@ -35,7 +140,13 @@ def make_dz_backend(
     if is_qptiff(path):
         if qptiff_pool is not None:
             return qptiff_pool.get(path)
-        return QptiffDZ(path, tile_size=tile_size, overlap=overlap, markers=markers, colors=colors)
+        return QptiffDZ(
+            path,
+            tile_size=tile_size,
+            overlap=overlap,
+            markers=markers,
+            colors=colors,
+        )
 
     if slide_pool is None:
         raise ValueError("slide_pool is required for OpenSlide-backed slides")

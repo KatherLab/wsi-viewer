@@ -121,7 +121,7 @@
     .legend-item{display:flex;flex-direction:column;gap:2px;padding:4px 0;font-size:0.9rem}
     .legend-swatch{width:14px;height:14px;border-radius:50%;flex-shrink:0;border:1px solid rgba(0,0,0,0.12)}
     .legend-checkbox{width:16px;height:16px;cursor:pointer;accent-color:var(--accent);flex-shrink:0}
-    .legend-marker{color:#111827;font-weight:500}
+    .legend-marker{color:#111827;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .legend-colorname{color:var(--muted);font-size:0.8rem;margin-left:auto}
     .legend-row{display:flex;align-items:center;gap:8px;width:100%}
     .legend-slider-row{display:flex;align-items:center;gap:6px;padding-left:24px;width:100%}
@@ -462,9 +462,9 @@
             </div>
           </div>
 
-          <!-- Marker Legend (QPTIFF only) -->
+          <!-- Channel/Marker Legend (multiplex TIFF only) -->
           <div class="info-section legend-section" v-if="qptiffAllMarkers.length > 0">
-            <h3 style="margin-bottom:8px">Marker Legend</h3>
+            <h3 style="margin-bottom:8px">Channels <span style="font-weight:400;font-size:0.8rem;color:var(--muted)">({{ qptiffAllMarkers.length }} total)</span></h3>
             <div class="legend-slider-header" v-if="qptiffActiveMarkers.length > 0">
               <span class="legend-intensity-header">Intensity</span>
             </div>
@@ -1188,8 +1188,12 @@ const app = createApp({
             this.qptiffMarkers = markerData.markers;
             this.qptiffMarkerColors = markerData.marker_colors || {};
             this.qptiffAllMarkers = markerData.markers;
-            // Initial active set = ALL markers with colors
-            this.qptiffActiveMarkers = Object.keys(markerData.marker_colors || {});
+            // Initial active set from default_markers (up to 3), or fall back to all markers
+            if (markerData.default_markers && markerData.default_markers.length) {
+              this.qptiffActiveMarkers = [...markerData.default_markers];
+            } else {
+              this.qptiffActiveMarkers = Object.keys(markerData.marker_colors || {});
+            }
             // Initialize channel display settings
             const displays = markerData.channel_displays || {};
             for (const marker of markerData.markers) {
@@ -1530,11 +1534,13 @@ const app = createApp({
             raf = requestAnimationFrame(step);
           };
 
+          // tile-drawn is only available with Canvas drawer (not WebGL), but try it
+          // as an optimization for faster swaps. The 500ms fallback handles WebGL.
           const onDraw = (ev) => {
             if (ev.tiledImage === newItem) swap();
           };
 
-          viewer.addHandler("tile-drawn", onDraw);
+          try { viewer.addHandler("tile-drawn", onDraw); } catch (e) {}
 
           // Fallback: swap after 500ms even if no tiles drawn yet
           timer = setTimeout(swap, 500);
