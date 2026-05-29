@@ -118,11 +118,17 @@
 
     /* Marker legend */
     .legend-section{margin-top:4px}
-    .legend-item{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:0.9rem}
+    .legend-item{display:flex;flex-direction:column;gap:2px;padding:4px 0;font-size:0.9rem}
     .legend-swatch{width:14px;height:14px;border-radius:50%;flex-shrink:0;border:1px solid rgba(0,0,0,0.12)}
     .legend-checkbox{width:16px;height:16px;cursor:pointer;accent-color:var(--accent);flex-shrink:0}
     .legend-marker{color:#111827;font-weight:500}
     .legend-colorname{color:var(--muted);font-size:0.8rem;margin-left:auto}
+    .legend-row{display:flex;align-items:center;gap:8px;width:100%}
+    .legend-slider-row{display:flex;align-items:center;gap:6px;padding-left:24px;width:100%}
+    .legend-slider-header{display:flex;justify-content:flex-end;padding-right:4px;margin-bottom:2px}
+    .legend-intensity-header{font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px}
+    .legend-slider{flex:1;height:4px;cursor:pointer;accent-color:var(--accent);min-width:60px;max-width:100%}
+    .legend-intensity-value{font-size:0.75rem;color:var(--muted);min-width:28px;text-align:right}
 
     /* Toolbar */
     .toolbar{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);display:flex;gap:.5rem;background:rgba(255,255,255,.98);border:1px solid var(--border);border-radius:999px;padding:.35rem .5rem;box-shadow:var(--shadow);z-index:15}
@@ -459,18 +465,29 @@
           <!-- Marker Legend (QPTIFF only) -->
           <div class="info-section legend-section" v-if="qptiffAllMarkers.length > 0">
             <h3 style="margin-bottom:8px">Marker Legend</h3>
+            <div class="legend-slider-header" v-if="qptiffActiveMarkers.length > 0">
+              <span class="legend-intensity-header">Intensity</span>
+            </div>
             <div v-for="marker in qptiffAllMarkers" :key="marker" class="legend-item">
-              <input type="checkbox"
-                     :checked="qptiffActiveMarkers.includes(marker)"
-                     @change="toggleQptiffChannel(marker)"
-                     class="legend-checkbox" />
-              <span class="legend-swatch"
-                    :style="{ background: cssColor(qptiffMarkerColors[marker] || 'gray') }"></span>
-              <span class="legend-marker">{{ marker }}</span>
-              <span v-if="qptiffMarkerColors[marker]" class="legend-colorname">
-                {{ qptiffMarkerColors[marker] }}
-              </span>
-              <span v-else class="legend-colorname">─</span>
+              <div class="legend-row">
+                <input type="checkbox"
+                       :checked="qptiffActiveMarkers.includes(marker)"
+                       @change="toggleQptiffChannel(marker)"
+                       class="legend-checkbox" />
+                <span class="legend-swatch"
+                      :style="{ background: cssColor(qptiffChannelDisplays[marker]?.color || '#808080') }"></span>
+                <span class="legend-marker">{{ marker }}</span>
+              </div>
+              <div class="legend-slider-row" v-if="qptiffActiveMarkers.includes(marker) && qptiffChannelDisplays[marker]">
+                <input type="range"
+                       min="-3"
+                       max="3"
+                       step="0.25"
+                       v-model.number="qptiffChannelDisplays[marker].exposure"
+                       @input="onExposureChange"
+                       class="legend-slider" />
+                <span class="legend-intensity-value">{{ formatExposure(qptiffChannelDisplays[marker].exposure) }}</span>
+              </div>
             </div>
           </div>
 
@@ -622,6 +639,7 @@ const app = createApp({
       qptiffMarkerColors: {}, // active marker → color mapping
       qptiffActiveMarkers: [], // currently selected marker names (subset of qptiffMarkers)
       qptiffAllMarkers: [],   // all available markers (for checkbox rendering)
+      qptiffChannelDisplays: {}, // marker -> {color, min, max, gamma, exposure}
       
       // UI state
       isFullscreen:false,
@@ -1159,6 +1177,7 @@ const app = createApp({
       this.qptiffMarkerColors = {};
       this.qptiffActiveMarkers = [];
       this.qptiffAllMarkers = [];
+      this.qptiffChannelDisplays = {};
 
       // Load QPTIFF marker info (only for multiplex TIFFs)
       try {
@@ -1171,6 +1190,20 @@ const app = createApp({
             this.qptiffAllMarkers = markerData.markers;
             // Initial active set = ALL markers with colors
             this.qptiffActiveMarkers = Object.keys(markerData.marker_colors || {});
+            // Initialize channel display settings
+            const displays = markerData.channel_displays || {};
+            for (const marker of markerData.markers) {
+              const d = displays[marker] || { color: '#ffffff', min: 0, max: 1, gamma: 1.0 };
+              this.qptiffChannelDisplays[marker] = {
+                color: d.color,
+                min: d.min,
+                max: d.max,
+                gamma: d.gamma,
+                baseMin: d.min,
+                baseMax: d.max,
+                exposure: 0,
+              };
+            }
           }
         }
       } catch(e) {
@@ -1267,6 +1300,7 @@ const app = createApp({
       this.qptiffMarkerColors = {};
       this.qptiffActiveMarkers = [];
       this.qptiffAllMarkers = [];
+      this.qptiffChannelDisplays = {};
       this.hasScale = false;
       this.mpp = null;
 
@@ -1342,12 +1376,42 @@ const app = createApp({
       this.rebuildOsdTileSource();
     },
 
+    onExposureChange() {
+      // Debounced: rebuild tiles after a short delay
+      if (this._exposureTimer) clearTimeout(this._exposureTimer);
+      this._exposureTimer = setTimeout(() => {
+        this._exposureTimer = null;
+        this.rebuildOsdTileSource();
+      }, 300);
+    },
+
+    formatExposure(val) {
+      if (val === 0) return '0';
+      return (val > 0 ? '+' : '') + val.toFixed(1);
+    },
+
     async _buildQptiffTileSource(id) {
-      // Build query string from active channels
+      // Build query string from active channels with display settings
       const active = this.qptiffActiveMarkers;
-      const colors = active.map(m => this.qptiffMarkerColors[m] || 'gray');
+      const colors = active.map(m => this.qptiffChannelDisplays[m]?.color || '#ffffff');
+      const mins = active.map(m => {
+        const d = this.qptiffChannelDisplays[m];
+        return d ? d.baseMin : 0;
+      });
+      const maxs = active.map(m => {
+        const d = this.qptiffChannelDisplays[m];
+        return d ? d.baseMin + (d.baseMax - d.baseMin) / Math.pow(2, d.exposure || 0) : 1;
+      });
+      const gammas = active.map(m => {
+        const d = this.qptiffChannelDisplays[m];
+        return d ? d.gamma : 1.0;
+      });
+
       const qs = 'channels=' + encodeURIComponent(active.join(',')) +
-                 '&colors=' + encodeURIComponent(colors.join(','));
+                 '&colors=' + encodeURIComponent(colors.join(',')) +
+                 '&mins=' + encodeURIComponent(mins.join(',')) +
+                 '&maxs=' + encodeURIComponent(maxs.join(',')) +
+                 '&gammas=' + encodeURIComponent(gammas.join(','));
 
       // Fetch DZI XML
       const resp = await fetch('/dzi/' + id + '.dzi?' + qs);
@@ -1364,6 +1428,29 @@ const app = createApp({
 
       const baseUrl = '/dzi/' + id + '_files/';
       const self = this;
+
+      function buildQueryString() {
+        const a = self.qptiffActiveMarkers;
+        const cols = a.map(m => self.qptiffChannelDisplays[m]?.color || '#ffffff');
+        const mi = a.map(m => {
+          const d = self.qptiffChannelDisplays[m];
+          return d ? d.baseMin : 0;
+        });
+        const ma = a.map(m => {
+          const d = self.qptiffChannelDisplays[m];
+          return d ? d.baseMin + (d.baseMax - d.baseMin) / Math.pow(2, d.exposure || 0) : 1;
+        });
+        const ga = a.map(m => {
+          const d = self.qptiffChannelDisplays[m];
+          return d ? d.gamma : 1.0;
+        });
+        return 'channels=' + encodeURIComponent(a.join(',')) +
+               '&colors=' + encodeURIComponent(cols.join(',')) +
+               '&mins=' + encodeURIComponent(mi.join(',')) +
+               '&maxs=' + encodeURIComponent(ma.join(',')) +
+               '&gammas=' + encodeURIComponent(ga.join(','));
+      }
+
       return {
         width: parseInt(size.getAttribute('Width')),
         height: parseInt(size.getAttribute('Height')),
@@ -1372,9 +1459,7 @@ const app = createApp({
         minLevel: 0,
         maxLevel: maxLevel,
         getTileUrl: function(level, x, y) {
-          return baseUrl + level + '/' + x + '_' + y + '.' + format +
-                 '?channels=' + encodeURIComponent(self.qptiffActiveMarkers.join(',')) +
-                 '&colors=' + encodeURIComponent(self.qptiffActiveMarkers.map(m => self.qptiffMarkerColors[m] || 'gray').join(','));
+          return baseUrl + level + '/' + x + '_' + y + '.' + format + '?' + buildQueryString();
         }
       };
     },
@@ -1382,20 +1467,77 @@ const app = createApp({
     async rebuildOsdTileSource() {
       if (!this.osd || !this.current) return;
 
-      // Save current viewport state before replacing
-      const viewport = this.osd.viewport;
+      // Sequence counter so older async rebuilds don't win after rapid changes
+      const seq = (this._qptiffRebuildSeq || 0) + 1;
+      this._qptiffRebuildSeq = seq;
+
+      const viewer = this.osd;
+      const viewport = viewer.viewport;
+
       const currentZoom = viewport.getZoom(true);
       const currentCenter = viewport.getCenter(true);
 
+      // Save old items before building new source
+      const oldItems = [];
+      for (let i = 0; i < viewer.world.getItemCount(); i++) {
+        oldItems.push(viewer.world.getItemAt(i));
+      }
+
       const tileSource = await this._buildQptiffTileSource(this.current);
-      this.osd.world.removeAll();
-      this.osd.addTiledImage({
+
+      if (!this.osd || seq !== this._qptiffRebuildSeq) return;
+
+      viewer.addTiledImage({
         tileSource,
         preload: true,
-        success: () => {
-          // Restore viewport after new image is loaded
+        opacity: 0,
+        success: (event) => {
+          if (!this.osd || seq !== this._qptiffRebuildSeq) {
+            try { viewer.world.removeItem(event.item); } catch (e) {}
+            return;
+          }
+
+          const newItem = event.item;
+
+          // Restore viewport immediately
           viewport.zoomTo(currentZoom, null, true);
           viewport.panTo(currentCenter, true);
+
+          // Swap on first tile-drawn event, or fallback after 500ms
+          let swapped = false;
+          let timer = null;
+          let raf = null;
+
+          const swap = () => {
+            if (swapped) return;
+            if (!this.osd || seq !== this._qptiffRebuildSeq) return;
+            swapped = true;
+            if (timer) clearTimeout(timer);
+            try { viewer.removeHandler("tile-drawn", onDraw); } catch (e) {}
+
+            // Quick fade-in (80ms)
+            const fadeStart = performance.now();
+            const step = (now) => {
+              if (!this.osd || seq !== this._qptiffRebuildSeq) return;
+              const t = Math.min(1, (now - fadeStart) / 80);
+              newItem.setOpacity(t);
+              if (t < 1) { raf = requestAnimationFrame(step); return; }
+              oldItems.forEach(item => {
+                if (item && item !== newItem) try { viewer.world.removeItem(item); } catch (e) {}
+              });
+              newItem.setOpacity(1);
+            };
+            raf = requestAnimationFrame(step);
+          };
+
+          const onDraw = (ev) => {
+            if (ev.tiledImage === newItem) swap();
+          };
+
+          viewer.addHandler("tile-drawn", onDraw);
+
+          // Fallback: swap after 500ms even if no tiles drawn yet
+          timer = setTimeout(swap, 500);
         }
       });
     },

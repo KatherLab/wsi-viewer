@@ -952,13 +952,20 @@ async def dzi_tile(
             except Exception:
                 raise HTTPException(404, f"Tile not found at level {level}, ({x},{y})")
 
+        # Determine if this is a default (cacheable) tile request
+        # Only cache tiles without display overrides to avoid cache explosion
+        is_default_qptiff = (
+            not (backend_key == "mxtiff" and (mins or maxs or gammas))
+        )
+
         try:
             img = await run_with_timeout(get_tile, timeout=10)
 
-            try:
-                cache.setex(ck, cache.ttl_tile, img)
-            except Exception:
-                pass
+            if is_default_qptiff:
+                try:
+                    cache.setex(ck, cache.ttl_tile, img)
+                except Exception:
+                    pass
 
             return Response(
                 content=img,
