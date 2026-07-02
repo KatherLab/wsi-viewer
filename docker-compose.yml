@@ -28,14 +28,10 @@ services:
     volumes:
       # Configuration
       - ./config.yml:/app/config.yml:ro
-      
       # static files (logo)
       - ./app/static:/app/app/static:ro
-      
       # Mount your slide directories (read-only)
       - /path/to/slides:/path/to/slides:ro
-      
-      
     depends_on:
       redis:
         condition: service_healthy

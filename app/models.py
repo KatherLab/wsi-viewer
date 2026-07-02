@@ -26,3 +26,9 @@ class SlideMeta(BaseModel):
     mpp_y: float | None = None
     created_ts: float
     file_size: int | None = None
+    # Derived from vendor properties (best-effort; None when unavailable)
+    scan_date: str | None = None
+    scanner_model: str | None = None
+    slide_label: str | None = None
+    quickhash: str | None = None
+    pyramid: list[dict] | None = None

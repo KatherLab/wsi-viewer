@@ -45,7 +45,7 @@
     .slide-search input{width:100%;padding:8px 12px 8px 36px;border-radius:8px;border:1px solid var(--border);background:#fff;outline:none}
     .slide-search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);opacity:0.5}
     .view-toggle{display:flex;gap:4px;background:var(--chip);padding:4px;border-radius:8px}
-    .view-btn{padding:6px 10px;border:none;background:transparent;cursor:pointer;border-radius:6px;color:#6b7280;transition:all .15s}
+    .view-btn{padding:6px 10px;border:none;background:transparent;cursor:pointer;border-radius:6px;color:#6b7280;transition:all .15s;display:inline-flex;align-items:center;justify-content:center;line-height:0}
     .view-btn.active{background:#fff;color:#111827;box-shadow:0 1px 3px rgba(0,0,0,.1)}
     .slide-count{color:var(--muted);font-size:0.9rem}
     .loading-badge{background:#fbbf24;color:#92400e;padding:2px 8px;border-radius:999px;font-size:0.75rem;font-weight:600}
@@ -134,6 +134,8 @@
     .toolbar{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);display:flex;gap:.5rem;background:rgba(255,255,255,.98);border:1px solid var(--border);border-radius:999px;padding:.35rem .5rem;box-shadow:var(--shadow);z-index:15}
     .tb-btn{width:36px;height:36px;border-radius:50%;border:1px solid var(--border);background:#fff;color:#111827;cursor:pointer;display:grid;place-items:center;transition:all .15s}
     .tb-btn:hover{background:#f3f4f6}
+    .tb-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .tb-btn:disabled{opacity:.4;cursor:not-allowed}
     .tb-sep{width:1px;background:var(--border);margin:0 4px}
 
     /* Empty state */
@@ -169,19 +171,6 @@
       white-space: normal; /* allow wrapping across the available width */
     }
 
-
-
-    .warn svg {
-      flex: 0 0 auto;
-    }
-
-    .warn:hover .tip {
-      visibility: visible;
-      opacity: 1;
-    }
-
-
-
     /* Fullscreen adjustments */
     #viewer:-webkit-full-screen .toolbar,
     #viewer:-webkit-full-screen .back-btn,
@@ -194,10 +183,85 @@
       display:flex !important;
       visibility:visible !important;
     }
+    /* Keep icons centered when the fullscreen override switches display to flex */
+    #viewer:fullscreen .back-btn,
+    #viewer:fullscreen .toggle-sidebar,
+    #viewer:fullscreen .tb-btn{
+      align-items:center;
+      justify-content:center;
+    }
+
+    /* Keyboard focus indicators */
+    input:focus-visible{outline:2px solid var(--accent);outline-offset:0;border-color:var(--accent)}
+    button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    .dir:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 
     /* Debug panel */
     .debug-panel{position:fixed;bottom:10px;right:10px;background:rgba(0,0,0,0.8);color:#fff;padding:8px 12px;border-radius:8px;font-size:0.75rem;font-family:monospace;z-index:1000;display:none}
     .debug-panel.show{display:block}
+
+    /* Spinning loader */
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .spin{animation:spin 0.8s linear infinite}
+
+    /* Prev/Next slide navigation */
+    .nav-btn{position:absolute;top:50%;transform:translateY(-50%);z-index:20;width:40px;height:56px;border-radius:10px;border:1px solid var(--border);background:rgba(255,255,255,.92);color:#111827;cursor:pointer;display:grid;place-items:center;box-shadow:var(--shadow);transition:all .15s}
+    .nav-btn:hover{background:#f3f4f6}
+    .nav-prev{left:16px}
+    .nav-next{right:16px}
+    .nav-btn:disabled{opacity:0;pointer-events:none}
+    .nav-btn:disabled{transition:opacity .2s}
+
+    /* Measurement overlay */
+    .meas-active{cursor:crosshair}
+    .meas-list{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+    .meas-row{display:flex;align-items:center;gap:8px;font-size:0.85rem;padding:4px 6px;border-radius:6px;background:#fff;border:1px solid var(--border)}
+    .meas-swatch{width:12px;height:12px;border-radius:3px;flex-shrink:0}
+    .meas-val{font-weight:600;color:#111827;flex:1}
+    .meas-del{border:none;background:transparent;color:var(--muted);cursor:pointer;padding:2px;display:grid;place-items:center;border-radius:4px}
+    .meas-del:hover{color:var(--danger);background:#fee2e2}
+    .meas-empty{font-size:0.82rem;color:var(--muted);font-style:italic}
+    .meas-readout{position:absolute;pointer-events:none;background:rgba(17,24,39,0.85);color:#fff;padding:3px 8px;border-radius:6px;font-size:0.78rem;font-weight:600;z-index:12;white-space:nowrap;transform:translate(8px,8px)}
+
+    /* Associated images modal */
+    .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:2000;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;padding:24px}
+    .modal-backdrop img{max-width:92vw;max-height:82vh;object-fit:contain;border-radius:6px;box-shadow:0 10px 40px rgba(0,0,0,.5);cursor:grab}
+    .modal-backdrop img.zoomed{cursor:grab;max-width:none;max-height:none}
+    .modal-title{color:#fff;font-size:0.9rem;letter-spacing:.3px}
+    .modal-close{position:absolute;top:16px;right:16px;width:40px;height:40px;border-radius:50%;border:none;background:rgba(255,255,255,.15);color:#fff;cursor:pointer;font-size:1.4rem;display:grid;place-items:center;transition:background .15s}
+    .modal-close:hover{background:rgba(255,255,255,.3)}
+    .modal-nav{position:absolute;top:50%;transform:translateY(-50%);width:48px;height:48px;border-radius:50%;border:none;background:rgba(255,255,255,.15);color:#fff;cursor:pointer;display:grid;place-items:center;transition:background .15s}
+    .modal-nav:hover{background:rgba(255,255,255,.3)}
+    .modal-nav.prev{left:16px}
+    .modal-nav.next{right:16px}
+    .modal-nav:disabled{opacity:0;pointer-events:none}
+
+    /* Copy button */
+    .copy-btn{border:none;background:transparent;color:var(--muted);cursor:pointer;padding:2px 4px;border-radius:4px;display:inline-flex;align-items:center}
+    .copy-btn:hover{color:var(--accent);background:var(--chip)}
+    .copy-btn.copied{color:#16a34a}
+
+    /* Properties expander */
+    .props-details{margin-top:8px}
+    .props-summary{cursor:pointer;font-size:0.85rem;color:var(--accent);font-weight:500;padding:4px 0;user-select:none}
+    .props-list{max-height:240px;overflow-y:auto;font-size:0.78rem;font-family:monospace;background:#fff;border:1px solid var(--border);border-radius:6px;padding:6px;margin-top:4px}
+    .props-list .prop-row{display:flex;gap:8px;padding:2px 0;border-bottom:1px dashed var(--border)}
+    .props-list .prop-row:last-child{border-bottom:none}
+    .props-list .prop-key{color:var(--muted);flex-shrink:0;max-width:45%;word-break:break-word}
+    .props-list .prop-val{color:#111827;word-break:break-word}
+
+    /* Pyramid level table */
+    .pyramid-table{width:100%;border-collapse:collapse;font-size:0.76rem;margin-top:4px;font-family:monospace}
+    .pyramid-table th{text-align:left;color:var(--muted);font-weight:500;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.4px;padding:3px 4px;border-bottom:1px solid var(--border)}
+    .pyramid-table td{padding:3px 4px;border-bottom:1px dashed var(--border);color:#374151}
+    .pyramid-table tr:last-child td{border-bottom:none}
+
+    /* Toast */
+    .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#111827;color:#fff;padding:10px 18px;border-radius:8px;font-size:0.85rem;z-index:3000;box-shadow:var(--shadow);opacity:0;transition:opacity .2s;pointer-events:none}
+    .toast.show{opacity:1}
+
+    /* Keyboard key styling (used in sidebar shortcuts) */
+    kbd{display:inline-block;background:var(--chip);border:1px solid var(--border);border-bottom-width:2px;border-radius:5px;padding:1px 6px;font-family:monospace;font-size:0.78rem;color:#374151;line-height:1.4;min-width:18px;text-align:center}
   </style>
 </head>
 <body>
@@ -311,7 +375,11 @@
                  @click="view(s.id)"
                  :data-slide-id="s.id">
               <div class="list-thumb">
-                <div v-if="s.loading" class="loading-spinner">⟳</div>
+                <div v-if="s.loading" class="loading-spinner">
+                  <svg class="spin" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="color:var(--muted)">
+                    <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                  </svg>
+                </div>
                 <img v-else-if="s.thumbUrl" 
                      :src="s.thumbUrl" 
                      alt="preview"/>
@@ -362,34 +430,48 @@
         <div id="osd-container">
           <div id="osd" aria-label="Slide viewer"></div>
           <canvas id="ruler" class="overlay" v-show="hasScale"></canvas>
+          <canvas id="meas-overlay" class="overlay" v-show="measuring || measurements.length" style="z-index:11"></canvas>
           
           <!-- Back button -->
-          <button class="back-btn" @click="closeViewer" title="Back to grid" aria-label="Back to grid">
+          <button class="back-btn" @click="closeViewer" title="Back to grid (Esc)" aria-label="Back to grid">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M19 12H5M12 19l-7-7 7-7"/>
             </svg>
           </button>
 
+          <!-- Prev / Next slide -->
+          <button class="nav-btn nav-prev" @click="navSlide(-1)" :disabled="!canNavPrev" :title="canNavPrev ? 'Previous slide ( [ )' : ''" aria-label="Previous slide">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
+          <button class="nav-btn nav-next" @click="navSlide(1)" :disabled="!canNavNext" :title="canNavNext ? 'Next slide ( ] )' : ''" aria-label="Next slide">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+          </button>
+
           <!-- Toggle sidebar button -->
-          <button class="toggle-sidebar" @click="showSidebar = !showSidebar" title="Toggle info panel">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <button class="toggle-sidebar" @click="showSidebar = !showSidebar" :title="showSidebar ? 'Hide info panel' : 'Show info panel'" :aria-expanded="showSidebar" aria-label="Toggle info panel">
+            <svg v-if="showSidebar" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="9" y1="3" x2="9" y2="21"></line>
+            </svg>
+            <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="2 2">
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
               <line x1="9" y1="3" x2="9" y2="21"></line>
             </svg>
           </button>
 
           <div class="toolbar" v-if="osd">
-            <button class="tb-btn" @click="osd.viewport.zoomBy(1/1.2)" title="Zoom out">−</button>
-            <button class="tb-btn" @click="osd.viewport.zoomBy(1.2)" title="Zoom in">+</button>
-            <div class="tb-sep"></div>
-            <button class="tb-btn" @click="resetView" title="Reset view">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v6h6"/></svg>
+            <button class="tb-btn" @click="osd.viewport.zoomBy(1/1.2)" title="Zoom out" aria-label="Zoom out">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>
             </button>
-            <button class="tb-btn" @click="fitWidth" title="Fit to width">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18"/><path d="M8 3l-4 4 4 4"/><path d="M16 3l4 4-4 4"/></svg>
+            <button class="tb-btn" @click="osd.viewport.zoomBy(1.2)" title="Zoom in" aria-label="Zoom in">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
             </button>
             <div class="tb-sep"></div>
-            <button class="tb-btn" @click="toggleFS" :title="isFullscreen ? 'Exit fullscreen' : 'Full screen'">
+            <button class="tb-btn" @click="resetView" title="Reset view" aria-label="Reset view">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg>
+            </button>
+            <div class="tb-sep"></div>
+            <button class="tb-btn" @click="toggleFS" :title="isFullscreen ? 'Exit fullscreen (F)' : 'Full screen (F)'">
               <svg v-if="!isFullscreen" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/>
               </svg>
@@ -397,7 +479,21 @@
                 <path d="M8 3v3a2 2 0 01-2 2H3m18 0h-3a2 2 0 01-2-2V3m0 18v-3a2 2 0 012-2h3M3 16h3a2 2 0 012 2v3"/>
               </svg>
             </button>
+            <div class="tb-sep"></div>
+            <button class="tb-btn" @click="toggleMeasure" :class="{active: measuring}" :disabled="!hasScale" :title="hasScale ? (measuring ? 'Stop measuring (M)' : 'Measure distance (M)') : 'Scale unknown — measuring disabled'" :style="!hasScale ? 'opacity:.4;cursor:not-allowed' : ''">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 17l14-14 4 4L7 21z"/>
+                <path d="M7 9l2 2"/>
+                <path d="M10 6l2 2"/>
+                <path d="M4 12l2 2"/>
+              </svg>
+            </button>
           </div>
+
+          <!-- Live measurement readout -->
+          <div class="meas-readout" v-show="measLive" :style="measLive ? {left: measLive.x + 'px', top: measLive.y + 'px'} : null">{{ measLive ? measLive.text : '' }}</div>
+          <!-- Hover tooltip for stored measurements -->
+          <div class="meas-readout" v-show="!measLive && measHover" :style="measHover ? {left: measHover.x + 'px', top: measHover.y + 'px', background:'rgba(17,24,39,0.92)'} : null">{{ measHover ? measHover.text : '' }}</div>
         </div>
 
         <!-- Sidebar -->
@@ -407,19 +503,54 @@
           <div class="info-section">
             <div class="info-row">
               <span class="info-label">Filename</span>
-              <span class="info-value" :title="slideMeta.name">{{ slideMeta.name }}</span>
+              <span class="info-value" :title="slideMeta.name">{{ slideMeta.name }}
+                <button class="copy-btn" @click="copyText(slideMeta.name, $event)" title="Copy filename" aria-label="Copy filename">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                </button>
+              </span>
+            </div>
+            <div class="info-row" v-if="slideMeta.path">
+              <span class="info-label">Path</span>
+              <span class="info-value" :title="slideMeta.path" style="font-family:monospace;font-size:0.78rem">
+                {{ shortPath(slideMeta.path) }}
+                <button class="copy-btn" @click="copyText(slideMeta.path, $event)" title="Copy path" aria-label="Copy path">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                </button>
+              </span>
             </div>
             <div class="info-row">
               <span class="info-label">Dimensions</span>
-              <span class="info-value">{{ slideMeta.width }} × {{ slideMeta.height }}</span>
+              <span class="info-value">{{ slideMeta.width }} × {{ slideMeta.height }} px
+                <button class="copy-btn" @click="copyText(slideMeta.width + 'x' + slideMeta.height, $event)" title="Copy dimensions" aria-label="Copy dimensions">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                </button>
+              </span>
             </div>
-            <div class="info-row" v-if="slideMeta.vendor">
+            <div class="info-row" v-if="slideMeta.vendor || slideMeta.scanner_model">
               <span class="info-label">Scanner</span>
-              <span class="info-value">{{ slideMeta.vendor }}</span>
+              <span class="info-value">
+                <span v-if="slideMeta.vendor">{{ slideMeta.vendor }}</span><span v-if="slideMeta.vendor && slideMeta.scanner_model"> · </span><span v-if="slideMeta.scanner_model" :title="slideMeta.scanner_model">{{ slideMeta.scanner_model }}</span>
+              </span>
             </div>
-            <div class="info-row" v-if="slideMeta.objective_power">
+            <div class="info-row" v-if="slideMeta.slide_label">
+              <span class="info-label">Slide label</span>
+              <span class="info-value" :title="slideMeta.slide_label">
+                {{ slideMeta.slide_label }}
+                <button class="copy-btn" @click="copyText(slideMeta.slide_label, $event)" title="Copy slide label" aria-label="Copy slide label">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                </button>
+              </span>
+            </div>
+            <div class="info-row" v-if="slideMeta.scan_date">
+              <span class="info-label">Scan date</span>
+              <span class="info-value" :title="slideMeta.scan_date">{{ slideMeta.scan_date }}</span>
+            </div>
+            <div class="info-row" v-if="slideMeta.objective_power || derivedMag">
               <span class="info-label">Objective</span>
-              <span class="info-value">{{ slideMeta.objective_power }}×</span>
+              <span class="info-value">
+                {{ slideMeta.objective_power ? slideMeta.objective_power + '×' : '' }}
+                <span v-if="!slideMeta.objective_power && derivedMag" style="color:var(--muted);font-size:0.8rem" :title="'Inferred from pixel size (~' + derivedMag + '× at ' + slideMeta.mpp_x.toFixed(3) + ' µm/px)'">~{{ derivedMag }}× <em>(est.)</em></span>
+              </span>
             </div>
             <div class="info-row" v-if="slideMeta.mpp_x">
               <span class="info-label">Resolution</span>
@@ -441,6 +572,10 @@
               <span class="info-label">Levels</span>
               <span class="info-value">{{ slideMeta.level_count }}</span>
             </div>
+            <div class="info-row" v-if="slideMeta.created_ts">
+              <span class="info-label">Modified</span>
+              <span class="info-value">{{ formatDate(slideMeta.created_ts) }}</span>
+            </div>
             <div class="info-row" v-if="!slideMeta.mpp_x">
               <span class="info-label">Resolution</span>
               <span class="info-value">
@@ -460,6 +595,43 @@
               <span class="info-label">File size</span>
               <span class="info-value">{{ prettySize(slideMeta.file_size) }}</span>
             </div>
+            <div class="info-row" v-if="slideMeta.quickhash">
+              <span class="info-label">Quickhash</span>
+              <span class="info-value" style="font-family:monospace;font-size:0.72rem;word-break:break-all">
+                {{ shortHash(slideMeta.quickhash) }}
+                <button class="copy-btn" @click="copyText(slideMeta.quickhash, $event)" title="Copy quickhash" aria-label="Copy quickhash">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+                </button>
+              </span>
+            </div>
+
+            <!-- Pyramid levels -->
+            <details class="props-details" v-if="slideMeta.pyramid && slideMeta.pyramid.length">
+              <summary class="props-summary">Pyramid levels ({{ slideMeta.pyramid.length }})</summary>
+              <table class="pyramid-table">
+                <thead><tr><th>#</th><th>Downsample</th><th>Dimensions</th><th>Tile</th></tr></thead>
+                <tbody>
+                  <tr v-for="(lv, i) in slideMeta.pyramid" :key="i">
+                    <td>{{ i }}</td>
+                    <td>{{ lv.downsample == null ? '–' : (lv.downsample === 1 ? '1×' : lv.downsample.toFixed(lv.downsample < 10 ? 2 : 0) + '×') }}</td>
+                    <td>{{ lv.width }}×{{ lv.height }}</td>
+                    <td>{{ lv.tile_w }}×{{ lv.tile_h }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </details>
+
+            <!-- Raw properties expander -->
+            <details class="props-details">
+              <summary class="props-summary" @click="toggleProperties">Show raw properties ({{ slideProperties.length }})</summary>
+              <div class="props-list" v-if="slideProperties.length">
+                <div class="prop-row" v-for="p in slideProperties" :key="p[0]">
+                  <span class="prop-key">{{ p[0] }}</span>
+                  <span class="prop-val">{{ p[1] }}</span>
+                </div>
+              </div>
+              <div v-else class="props-list" style="color:var(--muted);font-style:italic">No properties available.</div>
+            </details>
           </div>
 
           <!-- Channel/Marker Legend (multiplex TIFF only) -->
@@ -491,17 +663,71 @@
             </div>
           </div>
 
+          <!-- Measurements -->
+          <div class="info-section" v-if="hasScale">
+            <h3>Measurements
+              <span style="font-weight:400;font-size:0.8rem;color:var(--muted)">· {{ measUnits }}</span>
+              <button v-if="measurements.length" class="copy-btn" style="float:right" @click="clearMeasurements" title="Clear all measurements" aria-label="Clear all measurements">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg>
+              </button>
+            </h3>
+            <div class="meas-list" v-if="measurements.length">
+              <div class="meas-row" v-for="(m, i) in measurements" :key="m.id">
+                <span class="meas-swatch" :style="{background: m.color}"></span>
+                <span class="meas-val">{{ formatLength(m.lengthUm) }}</span>
+                <button class="meas-del" @click="removeMeasurement(i)" title="Delete measurement" aria-label="Delete measurement">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+            </div>
+            <div v-else class="meas-empty">Enable the measure tool <strong>(M)</strong> and drag on the image.</div>
+            <button class="copy-btn" v-if="measurements.length" @click="copyText(measurements.map(m => m.lengthUm).join('\n'), $event)" style="margin-top:6px">Copy values</button>
+          </div>
+
+          <!-- Keyboard shortcuts -->
+          <div class="info-section">
+            <details>
+              <summary class="props-summary">Keyboard shortcuts</summary>
+              <div style="font-size:0.82rem;color:#374151;line-height:1.7;margin-top:6px">
+                <div><kbd>+</kbd> / <kbd>-</kbd> &nbsp;Zoom in / out</div>
+                <div><kbd>0</kbd> &nbsp;Reset view</div>
+                <div><kbd>F</kbd> &nbsp;Toggle fullscreen</div>
+                <div><kbd>M</kbd> &nbsp;Toggle measure tool</div>
+                <div><kbd>[</kbd> / <kbd>]</kbd> &nbsp;Previous / next slide</div>
+                <div><kbd>Esc</kbd> &nbsp;Back to grid / close modal</div>
+              </div>
+            </details>
+          </div>
+
           <div class="info-section" v-if="associatedImages && associatedImages.length">
             <h3>Associated Images</h3>
-            <div v-for="img in associatedImages" :key="img.name" style="margin-bottom:10px">
+            <div v-for="(img, i) in associatedImages" :key="img.name" style="margin-bottom:10px">
               <div style="font-size:0.9rem;color:var(--muted);margin-bottom:4px">{{ img.name }}</div>
-              <img :src="img.url" :alt="img.name" class="label-image" @click="viewFullImage(img.url)"/>
+              <img :src="img.url" :alt="img.name" class="label-image" @click="openImageModal(i)" loading="lazy"/>
             </div>
           </div>
         </aside>
       </section>
     </main>
   </div>
+
+  <!-- Associated image modal -->
+  <div class="modal-backdrop" v-if="imageModal.open" @click.self="closeImageModal" @wheel.prevent="zoomImageModal($event)">
+    <button class="modal-close" @click="closeImageModal" aria-label="Close">×</button>
+    <button class="modal-nav prev" @click="navImageModal(-1)" :disabled="associatedImages.length <= 1" aria-label="Previous image">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <img :src="imageModalUrl" :alt="imageModalName" :class="{zoomed: imageModal.zoom > 1}"
+         :style="{transform: 'scale(' + imageModal.zoom + ') translate(' + imageModal.tx + 'px,' + imageModal.ty + 'px)'}"
+         @click="imageModal.zoom = imageModal.zoom > 1 ? 1 : 2" draggable="false"/>
+    <button class="modal-nav next" @click="navImageModal(1)" :disabled="associatedImages.length <= 1" aria-label="Next image">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+    </button>
+    <div class="modal-title">{{ imageModalName }} · click to toggle zoom · scroll to zoom · Esc to close</div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" :class="{show: toast.show}">{{ toast.msg }}</div>
 
   <!-- Debug panel -->
   <div class="debug-panel" :class="{show: debug}">
@@ -645,12 +871,33 @@ const app = createApp({
       isFullscreen:false,
       logoUrl:null,
       debug:false,
+
+      // Measurement tool
+      measuring:false,
+      measurements:[],          // [{id, lengthUm, color, x1,y1,x2,y2}] in image px
+      measLive:null,            // {x,y,text} live readout in screen px
+      measHover:null,           // {x,y,text} tooltip when hovering a stored measurement
+      measCanvas:null,
+      measCtx:null,
+      measUnits:'µm',
+      measSeq:0,
+      measPalette:['#2563eb','#ef4444','#16a34a','#d97706','#9333ea','#0891b2'],
+
+      // Raw properties
+      slideProperties:[],
+      _propsLoaded:false,
+
+      // Associated image modal
+      imageModal:{open:false, index:0, zoom:1, tx:0, ty:0},
+
+      // Toast
+      toast:{show:false, msg:''},
+      _toastTimer:null,
       
       // Request management - critical for performance
       activeRequests:0,
       pendingRequests: new Map(),
       requestQueue: [],
-      maxConcurrentThumbs: 2, // kept for debug badge; not used after queueing
       loadingSlides: new Set(),
       
       // Thumbnail queue/concurrency control
@@ -705,6 +952,25 @@ const app = createApp({
       return "";
     },
 
+
+    derivedMag(){
+      // Infer approximate objective magnification from pixel size.
+      // Reference: 0.25 µm/px ≈ 40×, 0.5 ≈ 20×, 1.0 ≈ 10× → mag = 10 / mpp
+      const m = this.slideMeta;
+      if (!m || !Number.isFinite(m?.mpp_x) || m.mpp_x <= 0 || m.objective_power) return null;
+      const est = 10 / m.mpp_x;
+      if (est < 1 || est > 100) return null;
+      return Math.round(est);
+    },
+
+    canNavPrev(){ return this.current && this.slideIndexInDir > 0; },
+    canNavNext(){ return this.current && this.slideIndexInDir < this.filteredSlides.length - 1; },
+    slideIndexInDir(){
+      if (!this.current || !this.filteredSlides.length) return -1;
+      return this.filteredSlides.findIndex(s => s.id === this.current);
+    },
+    imageModalUrl(){ const i = this.imageModal.index; return (this.associatedImages[i] || {}).url || ''; },
+    imageModalName(){ const i = this.imageModal.index; return (this.associatedImages[i] || {}).name || ''; },
 
     filteredTrees(){
       if(!this.q) return this.trees
@@ -1171,13 +1437,20 @@ const app = createApp({
         this.mpp = null;
       }
 
-      
+
       this.associatedImages = [];
       this.qptiffMarkers = [];
       this.qptiffMarkerColors = {};
       this.qptiffActiveMarkers = [];
       this.qptiffAllMarkers = [];
       this.qptiffChannelDisplays = {};
+      // Reset per-slide state
+      this.slideProperties = [];
+      this._propsLoaded = false;
+      this.measurements = [];
+      this.measLive = null;
+      this._measCurrent = null;
+      if (this.measuring) this.detachMeasure();
 
       // Load QPTIFF marker info (only for multiplex TIFFs)
       try {
@@ -1277,6 +1550,17 @@ const app = createApp({
         const canvas = document.getElementById('ruler');
         // Clean any previous hooks just in case
         if (this._rulerDetach) { try { this._rulerDetach(); } catch(e) {} this._rulerDetach = null; }
+        if (this._measViewportHandler) { try { this.osd && this.osd.removeHandler('update-viewport', this._measViewportHandler); } catch(e){} }
+        this._measViewportHandler = () => { if (this.measuring || this.measurements.length) this.redrawMeasurements(); };
+        if (this.osd) this.osd.addHandler('update-viewport', this._measViewportHandler);
+
+        // Hover tooltip over stored measurements (works in normal view too)
+        if (this._measHoverEl) { try { this._measHoverEl.removeEventListener('pointermove', this._measHoverHandler); } catch(e){} this._measHoverEl = null; }
+        this._measHoverHandler = (ev) => this._hoverMeasure(ev);
+        this._measHoverLeave = () => { this.measHover = null; };
+        this._measHoverEl = this.osd.canvas;
+        this._measHoverEl.addEventListener('pointermove', this._measHoverHandler);
+        this._measHoverEl.addEventListener('pointerleave', this._measHoverLeave);
 
         if (this.hasScale && this.mpp) {
           if (canvas) canvas.style.display = '';
@@ -1289,14 +1573,31 @@ const app = createApp({
             canvas.style.display = 'none';
           }
         }
+
+        // Restore zoom/center if navigated from prev/next
+        if (this._pendingNav && this.osd) {
+          const pv = this._pendingNav; this._pendingNav = null;
+          if (pv.zoom != null) this.osd.viewport.zoomTo(pv.zoom, null, true);
+          if (pv.center) this.osd.viewport.panTo(pv.center, true);
+        }
       });
 
     },
     
-    closeViewer(){ 
+    closeViewer(){
       this.cancelAllRequests();
+      this.detachMeasure();
+      if (this._measHoverEl) {
+        try { this._measHoverEl.removeEventListener('pointermove', this._measHoverHandler); } catch(e){}
+        try { this._measHoverEl.removeEventListener('pointerleave', this._measHoverLeave); } catch(e){}
+        this._measHoverEl = null;
+      }
+      this.measHover = null;
+      this.measuring = false;
+      this.measurements = [];
       if (this._rulerDetach) { try { this._rulerDetach(); } catch(e) {} this._rulerDetach = null; }
-      if (this.osd) { this.osd.destroy(); this.osd = null; } 
+      if (this._measViewportHandler) { this._measViewportHandler = null; }
+      if (this.osd) { this.osd.destroy(); this.osd = null; }
       this.current = null;
       this.slideMeta = null;
       this.associatedImages = [];
@@ -1330,26 +1631,13 @@ const app = createApp({
     },
 
     
-    resetView(){ 
-      if(!this.osd) return; 
-      this.osd.viewport.setRotation(0); 
+    resetView(){
+      if(!this.osd) return;
+      this.osd.viewport.setRotation(0);
       this.osd.viewport.goHome(true);
     },
-    
-    fitWidth(){
-      if(!this.osd) return;
-      const item=this.osd.world.getItemAt(0); 
-      if(!item) return;
-      const bounds=item.getBounds();
-      const vp=this.osd.viewport; 
-      const w=bounds.width;
-      if(w>0){ 
-        const containerAspect=vp.getContainerSize().x/vp.getContainerSize().y; 
-        vp.fitBoundsWithConstraints(new OpenSeadragon.Rect(bounds.x, bounds.y, w, w/containerAspect), true);
-      }
-    },
-    
-    toggleFS(){ 
+
+    toggleFS(){
       const viewer = document.getElementById('viewer');
       if (!document.fullscreenElement) {
         viewer.requestFullscreen();
@@ -1359,9 +1647,332 @@ const app = createApp({
         this.isFullscreen = false;
       }
     },
+
+    handleKey(e){
+      // Don't hijack typing in inputs / search fields
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      // Modal takes precedence
+      if (this.imageModal.open) {
+        if (e.key === 'Escape') this.closeImageModal();
+        else if (e.key === 'ArrowLeft') this.navImageModal(-1);
+        else if (e.key === 'ArrowRight') this.navImageModal(1);
+        return;
+      }
+      if (!this.current) return; // shortcuts apply in viewer
+      switch(e.key){
+        case 'Escape': this.closeViewer(); break;
+        case '+': case '=': if(this.osd) this.osd.viewport.zoomBy(1.2); break;
+        case '-': case '_': if(this.osd) this.osd.viewport.zoomBy(1/1.2); break;
+        case '0': this.resetView(); break;
+        case 'f': case 'F': this.toggleFS(); break;
+        case 'm': case 'M': this.toggleMeasure(); break;
+        case '[': this.navSlide(-1); break;
+        case ']': this.navSlide(1); break;
+        case 'ArrowLeft': if(e.shiftKey) this.navSlide(-1); break;
+        case 'ArrowRight': if(e.shiftKey) this.navSlide(1); break;
+        default: return;
+      }
+      e.preventDefault();
+    },
     
-    viewFullImage(url){
-      window.open(url, '_blank');
+    viewFullImage(url){ this.openImageModal(0); },
+
+    // ---------- Associated image modal ----------
+    openImageModal(i){
+      this.imageModal = {open:true, index:i, zoom:1, tx:0, ty:0};
+    },
+    closeImageModal(){ this.imageModal.open = false; },
+    navImageModal(d){
+      if (this.associatedImages.length <= 1) return;
+      const n = this.associatedImages.length;
+      this.imageModal.index = (this.imageModal.index + d + n) % n;
+      this.imageModal.zoom = 1; this.imageModal.tx = 0; this.imageModal.ty = 0;
+    },
+    zoomImageModal(e){
+      const z = this.imageModal.zoom * (e.deltaY < 0 ? 1.15 : 1/1.15);
+      this.imageModal.zoom = Math.max(1, Math.min(8, z));
+    },
+
+    // ---------- Prev / Next slide ----------
+    navSlide(d){
+      const idx = this.slideIndexInDir;
+      if (idx < 0) return;
+      const next = idx + d;
+      if (next < 0 || next >= this.filteredSlides.length) return;
+      // Remember position to try restoring after load
+      this._pendingNav = {zoom: this.osd ? this.osd.viewport.getZoom(true) : null,
+                          center: this.osd ? this.osd.viewport.getCenter(true) : null};
+      this.view(this.filteredSlides[next].id);
+    },
+
+    // ---------- Properties ----------
+    async toggleProperties(){
+      if (this._propsLoaded || this.slideProperties.length) return;
+      try {
+        const resp = await this.makeRequest('/api/properties/' + this.current, 300);
+        if (resp.ok) {
+          const data = await resp.json();
+          this.slideProperties = Object.entries(data.properties || {}).sort((a,b)=>a[0].localeCompare(b[0]));
+          this._propsLoaded = true;
+        }
+      } catch(e) { console.error('Properties load failed', e); }
+    },
+
+    // ---------- Copy / Toast ----------
+    async copyText(text, evt){
+      // navigator.clipboard is unavailable on non-secure (http) origins —
+      // fall back to a hidden textarea + execCommand('copy').
+      let ok = false;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          ta.setAttribute('readonly', '');
+          document.body.appendChild(ta);
+          ta.select();
+          ok = document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+      } catch(e) { ok = false; }
+      this.showToast(ok ? 'Copied' : 'Copy failed');
+      if (ok && evt && evt.currentTarget){ evt.currentTarget.classList.add('copied'); setTimeout(()=>evt.currentTarget.classList.remove('copied'), 900); }
+    },
+    showToast(msg){
+      this.toast = {show:true, msg};
+      if (this._toastTimer) clearTimeout(this._toastTimer);
+      this._toastTimer = setTimeout(()=>{ this.toast.show = false; }, 1600);
+    },
+
+    shortPath(path){
+      if (!path) return '';
+      // Show last 2 segments + ellipsis if long
+      const parts = path.split('/');
+      if (path.length < 48) return path;
+      return '…/' + parts.slice(-2).join('/');
+    },
+    shortHash(h){
+      if (!h) return '';
+      return h.length > 16 ? h.slice(0, 8) + '…' + h.slice(-8) : h;
+    },
+
+    // ---------- Measurement tool ----------
+    toggleMeasure(){
+      if (!this.hasScale) return;
+      this.measuring = !this.measuring;
+      if (this.measuring) this.attachMeasure();
+      else this.detachMeasure();
+    },
+    attachMeasure(){
+      if (!this.osd) return;
+      const c = document.getElementById('meas-overlay');
+      this.measCanvas = c;
+      this.measCtx = c ? c.getContext('2d') : null;
+      this.resizeMeasCanvas();
+      this.redrawMeasurements();
+      document.getElementById('osd-container').classList.add('meas-active');
+
+      // Disable OSD pan + zoom-to-click while measuring so drag draws a line.
+      const viewer = this.osd;
+      const gs = viewer.gestureSettingsByDeviceType('mouse');
+      this._measPrevGesture = {dragToPan: gs.dragToPan, clickToZoom: gs.clickToZoom, dblClickToZoom: gs.dblClickToZoom};
+      gs.dragToPan = false;
+      gs.clickToZoom = false;
+      gs.dblClickToZoom = false;
+
+      // Use plain DOM pointer events on the viewer canvas. Unlike OSD's
+      // MouseTracker (whose e.position is in document coordinates), pointer
+      // events give us offsetX/offsetY directly relative to the element, which
+      // is what windowToImageCoordinates expects.
+      const el = viewer.canvas;
+      this._measPointerDown = (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this._measStart(this._pointerPos(ev));
+        window.addEventListener('pointermove', this._measPointerMove);
+        window.addEventListener('pointerup', this._measPointerUp, {once:true});
+      };
+      this._measPointerMove = (ev) => {
+        if (!this._measCurrent) return;
+        this._measDrag(this._pointerPos(ev));
+      };
+      this._measPointerUp = (ev) => {
+        window.removeEventListener('pointermove', this._measPointerMove);
+        this._measEnd(this._pointerPos(ev));
+      };
+      el.addEventListener('pointerdown', this._measPointerDown);
+      this._measEl = el;
+      window.addEventListener('resize', this._measResizeBound = this._measResizeBound || (()=>{ this.resizeMeasCanvas(); this.redrawMeasurements(); }));
+    },
+    detachMeasure(){
+      if (this._measEl) {
+        this._measEl.removeEventListener('pointerdown', this._measPointerDown);
+        this._measEl = null;
+      }
+      window.removeEventListener('pointermove', this._measPointerMove);
+      if (this.osd && this._measPrevGesture) {
+        try {
+          const gs = this.osd.gestureSettingsByDeviceType('mouse');
+          gs.dragToPan = this._measPrevGesture.dragToPan;
+          gs.clickToZoom = this._measPrevGesture.clickToZoom;
+          gs.dblClickToZoom = this._measPrevGesture.dblClickToZoom;
+        } catch(e){}
+        this._measPrevGesture = null;
+      }
+      document.getElementById('osd-container')?.classList.remove('meas-active');
+      this.measLive = null;
+      this.redrawMeasurements();
+      window.removeEventListener('resize', this._measResizeBound);
+    },
+    _pointerPos(ev){
+      // Position relative to the OSD viewer element (CSS pixels).
+      const rect = this.osd.element.getBoundingClientRect();
+      return {x: ev.clientX - rect.left, y: ev.clientY - rect.top};
+    },
+    _hoverMeasure(ev){
+      if (!this.osd || this._measCurrent || !this.measurements.length) { this.measHover = null; return; }
+      const p = this._pointerPos(ev);
+      const threshold = 8; // px hit radius
+      let best = null;
+      for (const m of this.measurements) {
+        const a = this._imgToScreen({x:m.x1, y:m.y1});
+        const b = this._imgToScreen({x:m.x2, y:m.y2});
+        const d = this._distToSegment(p, a, b);
+        if (d <= threshold && (best === null || d < best.d)) {
+          best = {d, m};
+        }
+      }
+      this.measHover = best ? {x: p.x, y: p.y, text: this.formatLength(best.m.lengthUm)} : null;
+    },
+    _distToSegment(p, a, b){
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len2 = dx*dx + dy*dy;
+      if (len2 === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+      let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+      t = Math.max(0, Math.min(1, t));
+      const cx = a.x + t * dx, cy = a.y + t * dy;
+      return Math.hypot(p.x - cx, p.y - cy);
+    },
+    resizeMeasCanvas(){
+      const c = this.measCanvas; if (!c || !this.osd) return;
+      const r = this.osd.element.getBoundingClientRect();
+      const DPR = window.devicePixelRatio || 1;
+      const w = Math.max(1, Math.floor(r.width * DPR));
+      const h = Math.max(1, Math.floor(r.height * DPR));
+      // Only reassign when size changed (avoids clearing the canvas needlessly
+      // and avoids a resize→redraw→resize loop).
+      if (c.width !== w || c.height !== h) {
+        c.width = w;
+        c.height = h;
+        c.style.width = r.width + 'px';
+        c.style.height = r.height + 'px';
+      }
+    },
+    _screenToImage(p){
+      // p is a CSS pixel relative to the viewer element; windowToImageCoordinates
+      // expects document coords, so add the element's offset.
+      const vp = this.osd.viewport;
+      const rect = this.osd.element.getBoundingClientRect();
+      return vp.windowToImageCoordinates(new OpenSeadragon.Point(p.x + rect.left, p.y + rect.top));
+    },
+    _imgToScreen(p){
+      // imageToWindowCoordinates returns document coords; convert to coords
+      // relative to the viewer element (which is the canvas origin).
+      const w = this.osd.viewport.imageToWindowCoordinates(new OpenSeadragon.Point(p.x, p.y));
+      const rect = this.osd.element.getBoundingClientRect();
+      return {x: w.x - rect.left, y: w.y - rect.top};
+    },
+    _measStart(pos){
+      const img = this._screenToImage(pos);
+      this._measCurrent = {x1: img.x, y1: img.y, x2: img.x, y2: img.y};
+      this.measLive = {x: pos.x, y: pos.y, text: this.formatLength(0)};
+      this.redrawMeasurements();
+    },
+    _measDrag(pos){
+      if (!this._measCurrent) return;
+      const img = this._screenToImage(pos);
+      this._measCurrent.x2 = img.x; this._measCurrent.y2 = img.y;
+      const dx = this._measCurrent.x2 - this._measCurrent.x1;
+      const dy = this._measCurrent.y2 - this._measCurrent.y1;
+      const lenPx = Math.sqrt(dx*dx + dy*dy);
+      const lenUm = lenPx * (this.mpp || 0);
+      // Live readout position (CSS px, relative to viewer container origin)
+      this.measLive = {x: pos.x, y: pos.y, text: this.formatLength(lenUm)};
+      this.redrawMeasurements();
+    },
+    _measEnd(pos){
+      if (!this._measCurrent) return;
+      const dx = this._measCurrent.x2 - this._measCurrent.x1;
+      const dy = this._measCurrent.y2 - this._measCurrent.y1;
+      const lenPx = Math.sqrt(dx*dx + dy*dy);
+      // Ignore trivial clicks
+      if (lenPx > 2) {
+        const lenUm = lenPx * (this.mpp || 0);
+        this.measSeq++;
+        this.measurements.push({
+          id: 'm' + this.measSeq,
+          lengthUm: lenUm,
+          color: this.measPalette[(this.measurements.length) % this.measPalette.length],
+          x1: this._measCurrent.x1, y1: this._measCurrent.y1,
+          x2: this._measCurrent.x2, y2: this._measCurrent.y2,
+        });
+      }
+      this._measCurrent = null;
+      this.measLive = null;
+      this.redrawMeasurements();
+    },
+    removeMeasurement(i){ this.measurements.splice(i,1); this.redrawMeasurements(); },
+    clearMeasurements(){ this.measurements = []; this.redrawMeasurements(); },
+    formatLength(um){
+      if (!Number.isFinite(um)) return '–';
+      if (this.measUnits === 'mm' || um >= 1000) return (um/1000).toFixed(um >= 10000 ? 1 : 3) + ' mm';
+      if (um >= 1) return um.toFixed(um >= 100 ? 0 : 2) + ' µm';
+      return um.toFixed(3) + ' µm';
+    },
+    redrawMeasurements(){
+      // Lazily grab the overlay canvas so redraw works during normal
+      // (non-measuring) pan/zoom, even if attachMeasure was never called.
+      if (!this.measCanvas) {
+        const c = document.getElementById('meas-overlay');
+        this.measCanvas = c;
+        this.measCtx = c ? c.getContext('2d') : null;
+      }
+      const ctx = this.measCtx; const c = this.measCanvas;
+      if (!ctx || !c || !this.osd) return;
+      // Ensure canvas is sized to the current viewer (cheap if unchanged)
+      this.resizeMeasCanvas();
+      const DPR = window.devicePixelRatio || 1;
+      ctx.clearRect(0,0,c.width,c.height);
+      const draw = (m, active) => {
+        const a = this._imgToScreen({x:m.x1, y:m.y1});
+        const b = this._imgToScreen({x:m.x2, y:m.y2});
+        ctx.save();
+        ctx.scale(DPR, DPR);
+        ctx.strokeStyle = m.color;
+        ctx.lineWidth = active ? 2.5 : 2;
+        ctx.lineCap = 'round';
+        // Shadow for contrast
+        ctx.shadowColor = 'rgba(255,255,255,0.9)';
+        ctx.shadowBlur = 4;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        // Endpoints
+        ctx.fillStyle = m.color;
+        ctx.shadowBlur = 0;
+        ctx.beginPath(); ctx.arc(a.x, a.y, 3, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(b.x, b.y, 3, 0, Math.PI*2); ctx.fill();
+        ctx.restore();
+      };
+      this.measurements.forEach(m => draw(m, false));
+      if (this._measCurrent) draw({...this._measCurrent, color:'#2563eb'}, true);
+      // Keep aligned with pan/zoom
     },
 
     // QPTIFF channel selection methods
@@ -1544,9 +2155,12 @@ const app = createApp({
     },
   },
   
-  mounted(){ 
+  mounted(){
     window.vueApp = this;
-    this.loadTrees(); 
+    this.loadTrees();
+
+    // Keyboard shortcuts (viewer only; ignore when typing in inputs)
+    window.addEventListener('keydown', (e) => this.handleKey(e));
     
     // Listen for fullscreen changes
     document.addEventListener('fullscreenchange', () => {

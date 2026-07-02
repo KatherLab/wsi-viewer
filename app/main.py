@@ -686,6 +686,73 @@ def _vendor_label(p: Path) -> str:
     return "QPTIFF" if p.suffix.lower() in QPTIFF_EXTS else "Multiplex TIFF (mxtifffile)"
 
 
+def _derive_scan_date(props: dict) -> str | None:
+    """Best-effort acquisition date from vendor properties (ISO-ish, normalized)."""
+    raw = (
+        props.get("tiff.DateTime")            # "2020-06-11 10:58:45" or "2020:09:22 10:51:45"
+        or props.get("aperio.Date")           # "12/02/19" (with aperio.Time separately)
+        or props.get("ventana.ScanDate")      # "11-6-2020 10:49:23"
+        or props.get("hamamatsu.Created")     # "2018/04/24"
+    )
+    if not raw:
+        # Mirax stores creation datetime in a nested key
+        raw = props.get("mirax.GENERAL.SLIDE_CREATIONDATETIME")
+    if not raw:
+        return None
+    s = str(raw).strip()
+    # Normalize a few common separators to spaces for display
+    s = s.replace("T", " ").strip()
+    return s if s else None
+
+
+def _derive_scanner_model(props: dict, vendor: str | None) -> str | None:
+    """Best-effort scanner device string."""
+    return (
+        props.get("tiff.Model")
+        or props.get("ventana.ScannerModel")
+        or props.get("hamamatsu.Product")
+        or props.get("mirax.GENERAL.PROJECT_NAME")
+        or None
+    )
+
+
+def _derive_slide_label(props: dict) -> str | None:
+    """Best-effort lab slide identifier/title."""
+    return (
+        props.get("aperio.Title")
+        or props.get("aperio.Filename")
+        or props.get("mirax.GENERAL.SLIDE_NAME")
+        or props.get("mirax.GENERAL.SLIDE_ID")
+        or None
+    )
+
+
+def _derive_pyramid(props: dict, level_count: int) -> list[dict]:
+    """Compact pyramid level table: [{downsample, width, height, tile_w, tile_h}]."""
+    levels = []
+    for i in range(level_count):
+        def g(key: str) -> str | None:
+            return props.get(f"openslide.level[{i}].{key}")
+        ds = g("downsample")
+        w = g("width")
+        h = g("height")
+        tw = g("tile-width")
+        th = g("tile-height")
+        if not any([ds, w, h]):
+            break
+        try:
+            levels.append({
+                "downsample": float(ds) if ds is not None else None,
+                "width": int(w) if w is not None else None,
+                "height": int(h) if h is not None else None,
+                "tile_w": int(tw) if tw is not None else None,
+                "tile_h": int(th) if th is not None else None,
+            })
+        except (TypeError, ValueError):
+            break
+    return levels
+
+
 @app.get("/api/meta/{slide_id}")
 async def api_meta(slide_id: str):
     try:
@@ -747,6 +814,11 @@ async def api_meta(slide_id: str):
             mpp_y=mpp_y,
             created_ts=p.stat().st_mtime,
             file_size=file_size,
+            scan_date=_derive_scan_date(slide.properties),
+            scanner_model=_derive_scanner_model(slide.properties, slide.properties.get(openslide.PROPERTY_NAME_VENDOR)),
+            slide_label=_derive_slide_label(slide.properties),
+            quickhash=slide.properties.get("openslide.quickhash-1"),
+            pyramid=_derive_pyramid(slide.properties, slide.level_count),
         )
 
     try:
@@ -755,6 +827,54 @@ async def api_meta(slide_id: str):
     except Exception as e:
         log.exception("Metadata read failed for %s: %s", p, e)
         raise HTTPException(500, "Failed to read metadata")
+
+@app.get("/api/properties/{slide_id}")
+async def api_properties(slide_id: str):
+    """Return the raw vendor/property dictionary for a slide.
+
+    Surfaces OpenSlide's full properties map (barcodes, comments, resolutions,
+    vendor-specific keys) for QA / debugging. For multiplex TIFFs without an
+    OpenSlide properties map, a best-effort set of mxtifffile metadata is
+    returned instead.
+    """
+    try:
+        p = resolve_by_id_with_fallback(slide_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Slide not found")
+
+    def get_properties():
+        props: dict[str, str] = {}
+        backend = "openslide"
+        if is_multiplex_tiff(p):
+            backend = "mxtifffile"
+            dz = qptiff_pool.get(p)
+            # mxtifffile exposes image metadata via the underlying store
+            mx = getattr(dz, "mx", None)
+            if mx is not None:
+                try:
+                    md = mx.metadata if hasattr(mx, "metadata") else {}
+                    if isinstance(md, dict):
+                        for k, v in md.items():
+                            if v is None:
+                                continue
+                            props[str(k)] = str(v)
+                except Exception:
+                    pass
+            # Add a few derived fields useful for QA
+            props.setdefault("wsi.width", str(dz.width))
+            props.setdefault("wsi.height", str(dz.height))
+            props.setdefault("wsi.level_count", str(dz.level_count))
+        else:
+            slide = slide_pool.get(p)
+            for k, v in slide.properties.items():
+                props[str(k)] = str(v)
+        return {"backend": backend, "properties": props}
+
+    try:
+        return await run_with_timeout(get_properties, timeout=10)
+    except Exception as e:
+        log.exception("Properties read failed for %s: %s", p, e)
+        raise HTTPException(500, "Failed to read properties")
 
 @app.get("/api/associated/{slide_id}")
 async def api_associated_list(slide_id: str):
