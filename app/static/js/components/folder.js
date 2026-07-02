@@ -1,8 +1,9 @@
-// Recursive folder tree component. Extracted verbatim from the original
-// inline template; behavior unchanged.
+// Recursive folder tree component. Supports auto-expanding toward a target
+// path (passed as `expandPath`) so that a shared directory URL reveals its
+// location in the tree on load.
 export const Folder = {
   name: 'Folder',
-  props: ["node", "selectedPath"],
+  props: ["node", "selectedPath", "expandPath"],
   emits: ["select-dir"],
   data(){
     return {
@@ -13,25 +14,41 @@ export const Folder = {
     }
   },
   methods:{
+    async loadChildren(){
+      if (this.childrenLoaded || !this.node.has_children) return;
+      this.loading = true;
+      try {
+        const response = await fetch('/api/expand?' + new URLSearchParams({path: this.node.path}));
+        if (response.ok) {
+          this.localChildren = await response.json();
+          this.childrenLoaded = true;
+        }
+      } catch (e) {
+        console.error('Failed to load children:', e);
+      } finally {
+        this.loading = false;
+      }
+    },
     async toggle(){
       if (!this.open && !this.childrenLoaded && this.node.has_children) {
-        this.loading = true;
-        try {
-          const response = await fetch('/api/expand?' + new URLSearchParams({path: this.node.path}));
-          if (response.ok) {
-            this.localChildren = await response.json();
-            this.childrenLoaded = true;
-          }
-        } catch (e) {
-          console.error('Failed to load children:', e);
-        } finally {
-          this.loading = false;
-        }
+        await this.loadChildren();
       }
-
       this.open = !this.open;
       this.$emit("select-dir", this.node.path);
+    },
+    // If expandPath is set and this node is an ancestor of it, open + load
+    // children so the target reveals itself down the chain.
+    async maybeAutoExpand(){
+      const target = this.expandPath;
+      if (!target || this.node.path === target) return;
+      if (target.startsWith(this.node.path + '/')) {
+        if (!this.childrenLoaded && this.node.has_children) await this.loadChildren();
+        if (!this.open) this.open = true;
+      }
     }
+  },
+  watch:{
+    expandPath:{ immediate:true, handler(){ this.maybeAutoExpand(); } }
   },
   computed:{
     hasChildren(){
@@ -61,7 +78,7 @@ export const Folder = {
         </div>
       </div>
       <div class="children" v-if="open && children.length > 0">
-        <folder v-for="c in children" :key="c.id" :node="c" :selected-path="selectedPath" @select-dir="$emit('select-dir',$event)"></folder>
+        <folder v-for="c in children" :key="c.id" :node="c" :selected-path="selectedPath" :expand-path="expandPath" @select-dir="$emit('select-dir',$event)"></folder>
       </div>
     </div>`
 };

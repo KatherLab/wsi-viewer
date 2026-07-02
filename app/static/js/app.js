@@ -48,6 +48,13 @@ const app = createApp({
       logoUrl:null,
       debug:false,
 
+      // Keyboard help overlay
+      showHelp:false,
+
+      // Whether we're restoring state from a share URL (suppresses
+      // history.replaceState noise during initial load)
+      _restoringFromUrl:false,
+
       // Measurement tool
       measuring:false,
       measurements:[],          // [{id, lengthUm, color, x1,y1,x2,y2}] in image px
@@ -194,6 +201,12 @@ const app = createApp({
     }
   },
 
+  watch:{
+    viewMode(v){ this.savePref('viewMode', v); },
+    showSidebar(v){ this.savePref('showSidebar', v); },
+    itemsPerPage(v){ this.savePref('itemsPerPage', v); },
+  },
+
   methods: {
     // Utility methods
     prettySize(b){
@@ -235,6 +248,8 @@ const app = createApp({
       this.visibleSlides.forEach(s => this.revokeThumb(s));
       this.cancelAllRequests(); // Cancel everything when changing dirs
       this.selectedPath = path;
+      // Record the directory in the URL (clear any slide/viewport params)
+      this.pushSlideUrl(null, null, false);
       this.openDir(path);
     },
 
@@ -350,6 +365,8 @@ const app = createApp({
       // Cancel thumbnails when opening viewer
       this.cancelAllRequests();
       this.current = id;
+      // Record a fresh history entry for this slide (clears any prior viewport params)
+      this.pushSlideUrl(id, null, false);
 
       try {
         const metaResp = await this.makeRequest("/api/meta/" + id, 1000); // High priority
@@ -453,6 +470,14 @@ const app = createApp({
         this._measViewportHandler = () => { if (this.measuring || this.measurements.length) this.redrawMeasurements(); };
         if (this.osd) this.osd.addHandler('update-viewport', this._measViewportHandler);
 
+        // Debounced reflect of pan/zoom into the URL (replaceState, no history spam)
+        if (this._urlViewportTimer) { clearTimeout(this._urlViewportTimer); this._urlViewportTimer = null; }
+        this._urlViewportHandler = () => {
+          if (this._urlViewportTimer) clearTimeout(this._urlViewportTimer);
+          this._urlViewportTimer = setTimeout(() => this.updateViewportInUrl(), 500);
+        };
+        if (this.osd) this.osd.addHandler('viewport-changed', this._urlViewportHandler);
+
         // Hover tooltip over stored measurements (works in normal view too)
         if (this._measHoverEl) { try { this._measHoverEl.removeEventListener('pointermove', this._measHoverHandler); } catch(e){} this._measHoverEl = null; }
         this._measHoverHandler = (ev) => this._hoverMeasure(ev);
@@ -473,11 +498,15 @@ const app = createApp({
           }
         }
 
-        // Restore zoom/center if navigated from prev/next
-        if (this._pendingNav && this.osd) {
-          const pv = this._pendingNav; this._pendingNav = null;
+        // Restore zoom/center if navigated from prev/next, or from a share URL
+        const pv = this._pendingNav || this._shareViewport || null;
+        this._pendingNav = null;
+        this._shareViewport = null;
+        if (pv && this.osd) {
           if (pv.zoom != null) this.osd.viewport.zoomTo(pv.zoom, null, true);
-          if (pv.center) this.osd.viewport.panTo(pv.center, true);
+          const cx = pv.x != null ? pv.x : (pv.center ? pv.center.x : null);
+          const cy = pv.y != null ? pv.y : (pv.center ? pv.center.y : null);
+          if (cx != null && cy != null) this.osd.viewport.panTo(new OpenSeadragon.Point(cx, cy), true);
         }
       });
 
@@ -496,6 +525,8 @@ const app = createApp({
       this.measurements = [];
       if (this._rulerDetach) { try { this._rulerDetach(); } catch(e) {} this._rulerDetach = null; }
       if (this._measViewportHandler) { this._measViewportHandler = null; }
+      if (this._urlViewportHandler) { this._urlViewportHandler = null; }
+      if (this._urlViewportTimer) { clearTimeout(this._urlViewportTimer); this._urlViewportTimer = null; }
       if (this.osd) { this.osd.destroy(); this.osd = null; }
       this.current = null;
       this.slideMeta = null;
@@ -519,6 +550,9 @@ const app = createApp({
       if (document.fullscreenElement) {
         document.exitFullscreen();
       }
+
+      // Clear the shared slide from the URL
+      this.pushSlideUrl(null, null, false);
 
       // Rebuild grid after the viewer has fully unmounted
       this.$nextTick(async () => {
@@ -551,7 +585,13 @@ const app = createApp({
       // Don't hijack typing in inputs / search fields
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      // Modal takes precedence
+      // Help overlay (? / Escape) works everywhere
+      if (this.showHelp) {
+        if (e.key === 'Escape' || e.key === '?') { this.closeHelp(); e.preventDefault(); }
+        return;
+      }
+      if (e.key === '?' || (e.key === '/' && e.shiftKey)) { this.toggleHelp(); e.preventDefault(); return; }
+      // Associated-image modal takes precedence
       if (this.imageModal.open) {
         if (e.key === 'Escape') this.closeImageModal();
         else if (e.key === 'ArrowLeft') this.navImageModal(-1);
@@ -621,24 +661,8 @@ const app = createApp({
     // ---------- Copy / Toast ----------
     async copyText(text, evt){
       // navigator.clipboard is unavailable on non-secure (http) origins —
-      // fall back to a hidden textarea + execCommand('copy').
-      let ok = false;
-      try {
-        if (navigator.clipboard && window.isSecureContext) {
-          await navigator.clipboard.writeText(text);
-          ok = true;
-        } else {
-          const ta = document.createElement('textarea');
-          ta.value = text;
-          ta.style.position = 'fixed';
-          ta.style.left = '-9999px';
-          ta.setAttribute('readonly', '');
-          document.body.appendChild(ta);
-          ta.select();
-          ok = document.execCommand('copy');
-          document.body.removeChild(ta);
-        }
-      } catch(e) { ok = false; }
+      // falls back to a hidden textarea + execCommand('copy').
+      const ok = await this._copyTextRaw(text);
       this.showToast(ok ? 'Copied' : 'Copy failed');
       if (ok && evt && evt.currentTarget){ evt.currentTarget.classList.add('copied'); setTimeout(()=>evt.currentTarget.classList.remove('copied'), 900); }
     },
@@ -660,6 +684,106 @@ const app = createApp({
       return h.length > 16 ? h.slice(0, 8) + '…' + h.slice(-8) : h;
     },
 
+    // ---------- Share links / URL state ----------
+    // Reflect the current directory (?d=<path>) and slide (?s=<id>, plus
+    // optional viewport ?z/&x/&y) in the URL so it can be bookmarked / shared.
+    // slide_id is a deterministic hash of the absolute path, so no extra
+    // backend support is needed.
+    buildShareUrl(slideId, viewport){
+      const u = new URL(window.location.href);
+      // Current directory (absolute path; URLSearchParams encodes it)
+      if (this.selectedPath) u.searchParams.set('d', this.selectedPath);
+      else u.searchParams.delete('d');
+      // Slide + viewport
+      if (slideId) {
+        u.searchParams.set('s', slideId);
+        if (viewport && viewport.zoom != null) u.searchParams.set('z', viewport.zoom.toFixed(4));
+        if (viewport && viewport.x != null) u.searchParams.set('x', viewport.x.toFixed(4));
+        if (viewport && viewport.y != null) u.searchParams.set('y', viewport.y.toFixed(4));
+      } else {
+        for (const k of ['s','z','x','y']) u.searchParams.delete(k);
+      }
+      return u;
+    },
+    // Update the URL bar without polluting history on every zoom/pan.
+    // A single history entry per slide; subsequent viewport tweaks replaceState.
+    pushSlideUrl(slideId, viewport, replace){
+      if (this._restoringFromUrl) return;
+      const u = this.buildShareUrl(slideId, viewport);
+      const href = u.toString();
+      if (href === window.location.href) return;
+      try {
+        if (replace) window.history.replaceState({}, '', href);
+        else window.history.pushState({}, '', href);
+      } catch(e) { /* security-restricted origin (file://) — ignore */ }
+    },
+    updateViewportInUrl(){
+      if (!this.current || !this.osd) return;
+      const vp = this.osd.viewport;
+      this.pushSlideUrl(this.current, {
+        zoom: vp.getZoom(true),
+        x: vp.getCenter(true).x,
+        y: vp.getCenter(true).y,
+      }, true);
+    },
+    async copyShareLink(evt){
+      const url = this.buildShareUrl(this.current, null).toString();
+      const ok = await this._copyTextRaw(url);
+      this.showToast(ok ? 'Share link copied' : 'Copy failed');
+      if (ok && evt && evt.currentTarget){ evt.currentTarget.classList.add('copied'); setTimeout(()=>evt.currentTarget.classList.remove('copied'), 900); }
+    },
+    async _copyTextRaw(text){
+      // Shared clipboard helper (with http-origin fallback). Kept separate so
+      // copyShareLink can report success without double-firing the toast.
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed'; ta.style.left = '-9999px';
+        ta.setAttribute('readonly', '');
+        document.body.appendChild(ta); ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return ok;
+      } catch(e) { return false; }
+    },
+    readShareParams(){
+      const p = new URLSearchParams(window.location.search);
+      const dir = p.get('d');
+      const s = p.get('s');
+      if (!dir && (!s || !/^[0-9a-f]{16}$/.test(s))) return null;
+      const vp = {};
+      const z = parseFloat(p.get('z')), x = parseFloat(p.get('x')), y = parseFloat(p.get('y'));
+      if (Number.isFinite(z)) vp.zoom = z;
+      if (Number.isFinite(x)) vp.x = x;
+      if (Number.isFinite(y)) vp.y = y;
+      return { dir, slideId: s || null, viewport: vp };
+    },
+
+    // ---------- localStorage preferences ----------
+    _prefsKey:'wsi-prefs',
+    loadPrefs(){
+      try {
+        const raw = localStorage.getItem(this._prefsKey);
+        if (!raw) return {};
+        return JSON.parse(raw);
+      } catch(e) { return {}; }
+    },
+    savePref(key, val){
+      try {
+        const prefs = this.loadPrefs();
+        prefs[key] = val;
+        localStorage.setItem(this._prefsKey, JSON.stringify(prefs));
+      } catch(e) { /* private mode / disabled storage — ignore */ }
+    },
+
+    // ---------- Keyboard help overlay ----------
+    toggleHelp(){ this.showHelp = !this.showHelp; },
+    closeHelp(){ this.showHelp = false; },
+
     // Composable method groups (request mgmt, thumbnails, viewport,
     // measurements, QPTIFF channels) — spread in below.
     ...requestMethods,
@@ -671,10 +795,61 @@ const app = createApp({
 
   mounted(){
     window.vueApp = this;
+
+    // Restore persisted UI preferences (view mode, sidebar, page size)
+    const prefs = this.loadPrefs();
+    if (prefs.viewMode === 'grid' || prefs.viewMode === 'list') this.viewMode = prefs.viewMode;
+    if (typeof prefs.showSidebar === 'boolean') this.showSidebar = prefs.showSidebar;
+    if (Number.isFinite(prefs.itemsPerPage) && prefs.itemsPerPage > 0) this.itemsPerPage = prefs.itemsPerPage;
+
     this.loadTrees();
+
+    // Restore directory + slide + viewport from a share URL once trees load
+    const share = this.readShareParams();
+    if (share) {
+      this._restoringFromUrl = true;
+      this._shareViewport = share.viewport;
+      const tryRestore = async () => {
+        try {
+          if (share.dir) {
+            // Open the directory first (loads slide list). Set selectedPath so
+            // the tree highlights it and the URL round-trips correctly.
+            this.selectedPath = share.dir;
+            await this.openDir(share.dir);
+          }
+          if (share.slideId) {
+            await this.view(share.slideId);
+          }
+        } catch(e) { console.warn('Failed to restore shared location', e); }
+        finally { this._restoringFromUrl = false; }
+      };
+      this.$nextTick(() => setTimeout(tryRestore, 0));
+    }
 
     // Keyboard shortcuts (viewer only; ignore when typing in inputs)
     window.addEventListener('keydown', (e) => this.handleKey(e));
+
+    // Browser back/forward: match directory + slide to the URL
+    window.addEventListener('popstate', () => {
+      const sp = this.readShareParams();
+      if (sp) {
+        // Re-select the directory if it changed
+        if (sp.dir && sp.dir !== this.selectedPath) {
+          this.selectDir(sp.dir);
+        }
+        if (sp.slideId && sp.slideId !== this.current) {
+          this._shareViewport = sp.viewport;
+          this.view(sp.slideId);
+        } else if (!sp.slideId && this.current) {
+          // URL has a directory but no slide — drop back to the grid
+          this.closeViewer();
+        }
+      } else if (this.current || this.selectedPath) {
+        // No params at all — return to the root tree view
+        if (this.current) this.closeViewer();
+        this.selectedPath = null;
+      }
+    });
 
     // Listen for fullscreen changes
     document.addEventListener('fullscreenchange', () => {

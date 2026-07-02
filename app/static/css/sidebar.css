@@ -73,3 +73,8 @@
 .pyramid-table th{text-align:left;color:var(--muted);font-weight:500;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.4px;padding:3px 4px;border-bottom:1px solid var(--border)}
 .pyramid-table td{padding:3px 4px;border-bottom:1px dashed var(--border);color:#374151}
 .pyramid-table tr:last-child td{border-bottom:none}
+
+/* Share link button */
+.share-btn{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;margin:0 0 12px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--chip);color:var(--accent);font-size:0.85rem;font-weight:500;cursor:pointer;transition:background .15s,border-color .15s}
+.share-btn:hover{background:#e0e7ff;border-color:var(--accent)}
+.share-btn.copied{color:#16a34a;border-color:#16a34a;background:#dcfce7}

@@ -30,7 +30,7 @@
         <input v-model="q" placeholder="Filter folders…" aria-label="Filter folders"/>
       </div>
       <div class="tree">
-        <folder v-for="t in filteredTrees" :key="t.id" :node="t" :selected-path="selectedPath" @select-dir="selectDir"></folder>
+        <folder v-for="t in filteredTrees" :key="t.id" :node="t" :selected-path="selectedPath" :expand-path="selectedPath" @select-dir="selectDir"></folder>
       </div>
     </aside>
 
@@ -69,8 +69,13 @@
           </div>
 
           <div class="slide-count">
-            {{ filteredSlides.length }} {{ filteredSlides.length === 1 ? 'slide' : 'slides' }}
-            <span v-if="slideSearch">(filtered)</span>
+            <template v-if="slideSearch">
+              {{ filteredSlides.length }} of {{ slides.length }} {{ slides.length === 1 ? 'slide' : 'slides' }}
+            </template>
+            <template v-else>
+              {{ filteredSlides.length }} {{ filteredSlides.length === 1 ? 'slide' : 'slides' }}
+            </template>
+            <span class="count-hint">press <kbd>?</kbd> for help</span>
           </div>
         </div>
 
@@ -247,6 +252,14 @@
         <!-- Sidebar -->
         <aside class="sidebar" v-if="showSidebar && slideMeta">
           <h3>Slide Information</h3>
+
+          <button class="share-btn" @click="copyShareLink($event)" title="Copy a shareable link to this slide + view" aria-label="Copy share link">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+            Copy share link
+          </button>
 
           <div class="info-section">
             <div class="info-row">
@@ -482,6 +495,34 @@
     Active: {{ activeRequests }}<br>
     Queue: {{ requestQueue.length }}<br>
     Visible: {{ visibleRange.start }}-{{ visibleRange.end }}
+  </div>
+
+  <!-- Keyboard help overlay -->
+  <div class="help-backdrop" v-if="showHelp" @click.self="closeHelp">
+    <div class="help-modal" role="dialog" aria-label="Keyboard shortcuts">
+      <button class="help-close" @click="closeHelp" aria-label="Close">×</button>
+      <h2>Keyboard shortcuts</h2>
+      <div class="help-cols">
+        <div class="help-col">
+          <h3>Viewer</h3>
+          <div class="help-row"><span class="keys"><kbd>+</kbd> / <kbd>=</kbd></span><span>Zoom in</span></div>
+          <div class="help-row"><span class="keys"><kbd>−</kbd></span><span>Zoom out</span></div>
+          <div class="help-row"><span class="keys"><kbd>0</kbd></span><span>Reset view</span></div>
+          <div class="help-row"><span class="keys"><kbd>F</kbd></span><span>Toggle fullscreen</span></div>
+          <div class="help-row"><span class="keys"><kbd>M</kbd></span><span>Toggle measure tool</span></div>
+          <div class="help-row"><span class="keys"><kbd>[</kbd> / <kbd>]</kbd></span><span>Previous / next slide</span></div>
+          <div class="help-row"><span class="keys"><kbd>⇧</kbd>+<kbd>←</kbd>/<kbd>→</kbd></span><span>Previous / next slide</span></div>
+          <div class="help-row"><span class="keys"><kbd>Esc</kbd></span><span>Back to grid / close</span></div>
+        </div>
+        <div class="help-col">
+          <h3>Anywhere</h3>
+          <div class="help-row"><span class="keys"><kbd>?</kbd></span><span>Show / hide this help</span></div>
+          <div class="help-row"><span class="keys"><kbd>Esc</kbd></span><span>Close modal / help</span></div>
+          <div class="help-row" v-if="current"><span class="keys">Share</span><span>Use “Copy share link” in the info panel</span></div>
+        </div>
+      </div>
+      <p class="help-tip">Tip: the URL reflects the current slide and view — bookmark or share it directly.</p>
+    </div>
   </div>
 </div>
 
