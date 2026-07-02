@@ -281,7 +281,7 @@ async def track_requests(request: Request, call_next):
         active_requests.pop(request_id, None)
 
 # --------------------------------------------------------------------------- #
-app.mount("/static", StaticFiles(directory=str(TEMPLATES_DIR)), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 # --------------------------------------------------------------------------- #

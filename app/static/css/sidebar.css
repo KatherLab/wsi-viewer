@@ -1,0 +1,75 @@
+/* Sidebar: info panel, properties, pyramid table, channel legend, measurements, warnings */
+
+/* Sidebar */
+.sidebar{background:var(--panel);border-left:1px solid var(--border);overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:20px}
+.sidebar h3{margin:0;font-size:1.1rem;color:#111827}
+.info-section{background:var(--chip);border-radius:10px;padding:14px}
+.info-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)}
+.info-row:last-child{border-bottom:none}
+.info-label{color:var(--muted);font-size:0.9rem}
+.info-value{color:#111827;font-weight:500;font-size:0.9rem;text-align:right;max-width:60%;word-break:break-word}
+.label-image{width:100%;border-radius:8px;margin-top:10px;cursor:pointer}
+
+/* Side-menu resolution warning (full-width, left-aligned) */
+.warnline {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 6px;
+  background: #fef3c7;      /* amber-50 */
+  color: #92400e;            /* amber-900 */
+  border: 1px solid #f59e0b; /* amber-500 */
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.3;
+  max-width: 100%;
+  word-wrap: break-word;
+}
+
+.warnline svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.warntext {
+  white-space: normal; /* allow wrapping across the available width */
+}
+
+/* Marker legend */
+.legend-section{margin-top:4px}
+.legend-item{display:flex;flex-direction:column;gap:2px;padding:4px 0;font-size:0.9rem}
+.legend-swatch{width:14px;height:14px;border-radius:50%;flex-shrink:0;border:1px solid rgba(0,0,0,0.12)}
+.legend-checkbox{width:16px;height:16px;cursor:pointer;accent-color:var(--accent);flex-shrink:0}
+.legend-marker{color:#111827;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.legend-colorname{color:var(--muted);font-size:0.8rem;margin-left:auto}
+.legend-row{display:flex;align-items:center;gap:8px;width:100%}
+.legend-slider-row{display:flex;align-items:center;gap:6px;padding-left:24px;width:100%}
+.legend-slider-header{display:flex;justify-content:flex-end;padding-right:4px;margin-bottom:2px}
+.legend-intensity-header{font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px}
+.legend-slider{flex:1;height:4px;cursor:pointer;accent-color:var(--accent);min-width:60px;max-width:100%}
+.legend-intensity-value{font-size:0.75rem;color:var(--muted);min-width:28px;text-align:right}
+
+/* Measurements list */
+.meas-list{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.meas-row{display:flex;align-items:center;gap:8px;font-size:0.85rem;padding:4px 6px;border-radius:6px;background:#fff;border:1px solid var(--border)}
+.meas-swatch{width:12px;height:12px;border-radius:3px;flex-shrink:0}
+.meas-val{font-weight:600;color:#111827;flex:1}
+.meas-del{border:none;background:transparent;color:var(--muted);cursor:pointer;padding:2px;display:grid;place-items:center;border-radius:4px}
+.meas-del:hover{color:var(--danger);background:#fee2e2}
+.meas-empty{font-size:0.82rem;color:var(--muted);font-style:italic}
+
+/* Properties expander */
+.props-details{margin-top:8px}
+.props-summary{cursor:pointer;font-size:0.85rem;color:var(--accent);font-weight:500;padding:4px 0;user-select:none}
+.props-list{max-height:240px;overflow-y:auto;font-size:0.78rem;font-family:monospace;background:#fff;border:1px solid var(--border);border-radius:6px;padding:6px;margin-top:4px}
+.props-list .prop-row{display:flex;gap:8px;padding:2px 0;border-bottom:1px dashed var(--border)}
+.props-list .prop-row:last-child{border-bottom:none}
+.props-list .prop-key{color:var(--muted);flex-shrink:0;max-width:45%;word-break:break-word}
+.props-list .prop-val{color:#111827;word-break:break-word}
+
+/* Pyramid level table */
+.pyramid-table{width:100%;border-collapse:collapse;font-size:0.76rem;margin-top:4px;font-family:monospace}
+.pyramid-table th{text-align:left;color:var(--muted);font-weight:500;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.4px;padding:3px 4px;border-bottom:1px solid var(--border)}
+.pyramid-table td{padding:3px 4px;border-bottom:1px dashed var(--border);color:#374151}
+.pyramid-table tr:last-child td{border-bottom:none}

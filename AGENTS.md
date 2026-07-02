@@ -22,8 +22,22 @@ app/
 │   ├── qptiff_dz.py         # QptiffDZ class for multiplex TIFF files
 │   └── qptiff_pool.py       # QptiffPool LRU pool for QPTIFF handles
 ├── templates/
-│   └── index.html           # Single-file Vue 3 frontend (all JS/CSS inline)
-├── static/                  # Static assets (logo.svg, logo.png)
+│   └── index.html           # Vue 3 frontend markup (mounts #app; CSS/JS in static/)
+├── static/                  # Static assets served at /static
+│   ├── logo.svg, *.jpg      # Branding / preview images
+│   ├── css/                 # base, browser, viewer, sidebar, modal stylesheets
+│   └── js/
+│       ├── app.js           # createApp root: data, computed, viewer/modal/nav methods, mount
+│       ├── viewer.js        # createOsdViewer() OpenSeadragon factory
+│       ├── ruler.js         # attachRuler() scale-bar overlay
+│       ├── components/folder.js    # Recursive folder tree component
+│       ├── directives/observeVisible.js  # IntersectionObserver directive
+│       └── composables/     # Method groups spread into the root instance:
+│           ├── useRequests.js     # fetch/abort/cancel + blob URL lifecycle
+│           ├── useThumbnails.js   # queued, priority thumbnail loading
+│           ├── useViewport.js     # IntersectionObserver + virtual scroll range
+│           ├── useMeasure.js      # distance measurement tool + canvas overlay
+│           └── useQptiff.js       # multiplex channel toggle / tile-source rebuild
 ```
 
 ## Key Concepts
@@ -101,13 +115,14 @@ app/
 3. For custom backends, add a new class in `deepzoom_backends/` and register it in `factory.py`.
 
 ### Modifying the frontend
-- All UI code is in `app/templates/index.html`.
-- Vue 3 app starts at line ~588 (`createApp`).
-- The ruler/scale bar is the `attachRuler()` function at the bottom.
-- CSS variables are at the top of the `<style>` block.
+- Markup lives in `app/templates/index.html` (the `#app` shell Vue mounts against).
+- Vue 3 app entry is `app/static/js/app.js` (ESM, no build step; Vue loaded from `/static/js/vendor/`).
+- Logic is split into `app/static/js/composables/` (requests, thumbnails, viewport, measurements, qptiff) as method groups spread into the root instance.
+- The ruler/scale bar is `attachRuler()` in `app/static/js/ruler.js`.
+- CSS variables are at the top of `app/static/css/base.css`.
 
 ### Debugging
-- Enable the debug panel by setting `debug: true` in the Vue data (line ~623).
+- Enable the debug panel by setting `debug: true` in the Vue `data()` in `app/static/js/app.js`.
 - Check `/health` for NFS and Redis status.
 - Redis cache keys use the format `wsi:|tree/thumb/tile|...` with hashing for long keys.
 

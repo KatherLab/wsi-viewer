@@ -1,0 +1,56 @@
+/* Browser: controls, grid view, list view, cards, thumbnails, pagination */
+
+/* Browser controls */
+.browser-controls{padding:12px 14px;background:#fff;border-bottom:1px solid var(--border);display:flex;gap:12px;align-items:center}
+.slide-search{flex:1;position:relative}
+.slide-search input{width:100%;padding:8px 12px 8px 36px;border-radius:8px;border:1px solid var(--border);background:#fff;outline:none}
+.slide-search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);opacity:0.5}
+.view-toggle{display:flex;gap:4px;background:var(--chip);padding:4px;border-radius:8px}
+.view-btn{padding:6px 10px;border:none;background:transparent;cursor:pointer;border-radius:6px;color:#6b7280;transition:all .15s;display:inline-flex;align-items:center;justify-content:center;line-height:0}
+.view-btn.active{background:#fff;color:#111827;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+.slide-count{color:var(--muted);font-size:0.9rem}
+.loading-badge{background:#fbbf24;color:#92400e;padding:2px 8px;border-radius:999px;font-size:0.75rem;font-weight:600}
+
+/* Grid view */
+.grid-container{flex:1;overflow-y:auto;background:#fff;position:relative}
+.grid{padding:14px;display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;position:relative}
+
+/* List view */
+.list-container{flex:1;overflow-y:auto;background:#fff}
+.list{padding:8px}
+.list-item{display:flex;align-items:center;padding:10px 14px;border:1px solid var(--border);background:#fff;margin-bottom:4px;border-radius:8px;cursor:pointer;transition:all .15s}
+.list-item:hover{background:#f0f2f6;transform:translateX(2px)}
+.list-thumb{width:60px;height:45px;background:#f1f5f9;border-radius:6px;margin-right:14px;overflow:hidden;flex-shrink:0;position:relative}
+.list-thumb img{width:100%;height:100%;object-fit:cover}
+.list-thumb .loading-spinner{position:absolute;inset:0;display:grid;place-items:center;background:rgba(255,255,255,0.9)}
+.list-info{flex:1;min-width:0}
+.list-name{font-weight:500;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.list-meta{display:flex;gap:12px;margin-top:4px;font-size:0.85rem;color:var(--muted)}
+.list-ext{background:#eef2ff;color:#1e3a8a;padding:2px 6px;border-radius:4px;font-size:0.75rem}
+
+/* Card styles */
+.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;overflow:hidden;box-shadow:var(--shadow);transition:transform .12s, box-shadow .12s;position:relative}
+.card:hover{transform:translateY(-1px);box-shadow:0 10px 28px rgba(0,0,0,.08)}
+.card.loading .thumb{background:#f3f4f6}
+.card.loading .thumb::after{
+  content:'';position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.5),transparent);
+  animation:shimmer 1.5s infinite;
+}
+@keyframes shimmer{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+.thumb{width:100%;height:180px;background:#f1f5f9;display:grid;place-items:center;position:relative;overflow:hidden}
+.thumb img{width:100%;height:100%;object-fit:contain;background:#fff}
+.thumb .fallback{position:absolute;inset:0;display:grid;place-items:center}
+.meta{padding:10px 12px;font-size:.9rem;color:#374151}
+.meta-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.filename{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.filesize{color:var(--muted);font-size:0.85rem}
+.ext-pill{font-size:.72rem;background:#eef2ff;color:#1e3a8a;padding:2px 8px;border-radius:999px;border:1px solid #c7d2fe}
+
+/* Pagination */
+.pagination{padding:12px 14px;background:#fff;border-top:1px solid var(--border);display:flex;justify-content:center;align-items:center;gap:8px}
+.page-btn{padding:6px 12px;border:1px solid var(--border);background:#fff;border-radius:6px;cursor:pointer;transition:all .15s;min-width:36px;text-align:center}
+.page-btn:hover:not(:disabled){background:var(--chip)}
+.page-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.page-btn:disabled{opacity:0.5;cursor:not-allowed}
+.page-info{color:var(--muted);padding:0 12px}
