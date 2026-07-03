@@ -10,6 +10,10 @@
 .view-btn.active{background:#fff;color:#111827;box-shadow:0 1px 3px rgba(0,0,0,.1)}
 .slide-count{color:var(--muted);font-size:0.9rem}
 .loading-badge{background:#fbbf24;color:#92400e;padding:2px 8px;border-radius:999px;font-size:0.75rem;font-weight:600}
+.user-menu{display:flex;align-items:center;gap:10px}
+.user-name{color:var(--muted);font-size:0.85rem}
+.logout-btn{border:1px solid var(--border);background:#fff;color:var(--fg);padding:5px 12px;border-radius:6px;font-size:0.8rem;cursor:pointer}
+.logout-btn:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
 
 /* Grid view */
 .grid-container{flex:1;overflow-y:auto;background:#fff;position:relative}

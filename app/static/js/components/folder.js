@@ -10,7 +10,8 @@ export const Folder = {
       open: false,
       loading: false,
       childrenLoaded: false,
-      localChildren: null
+      localChildren: null,
+      denied: false   // set when /api/expand returned 403 (no list permission)
     }
   },
   methods:{
@@ -18,7 +19,14 @@ export const Folder = {
       if (this.childrenLoaded || !this.node.has_children) return;
       this.loading = true;
       try {
-        const response = await fetch('/api/expand?' + new URLSearchParams({path: this.node.path}));
+        const response = await fetch('/api/expand?' + new URLSearchParams({path: this.node.path}),
+                                     {credentials: 'same-origin'});
+        if (response.status === 403) {
+          // Per-user ACL denial: this directory is not listable for this user.
+          this.denied = true;
+          this.$root.showToast(`No access to "${this.node.name}"`);
+          return;
+        }
         if (response.ok) {
           this.localChildren = await response.json();
           this.childrenLoaded = true;
@@ -30,6 +38,7 @@ export const Folder = {
       }
     },
     async toggle(){
+      if (this.node.locked) return;  // access-denied root: not expandable
       if (!this.open && !this.childrenLoaded && this.node.has_children) {
         await this.loadChildren();
       }
@@ -67,14 +76,16 @@ export const Folder = {
   },
   template:`
     <div>
-      <div class="dir" @click="toggle" :aria-expanded="open" :class="{selected: isSelected}">
+      <div class="dir" @click="toggle" :aria-expanded="open" :class="{selected: isSelected, locked: node.locked || denied}">
         <div>
           <strong>{{ node.name }}</strong>
           <small v-if="slideCountText" style="color:var(--muted)"> · {{ slideCountText }}</small>
           <span v-if="loading" style="margin-left:8px;color:var(--muted)">(loading...)</span>
+          <span v-if="node.locked || denied" style="margin-left:8px;color:#dc2626" title="You don't have access to this directory">🔒 no access</span>
         </div>
         <div class="right">
-          <span v-if="hasChildren" style="color:var(--muted)">{{ open ? "▾" : "▸" }}</span>
+          <span v-if="node.locked || denied" style="color:#dc2626"></span>
+          <span v-else-if="hasChildren" style="color:var(--muted)">{{ open ? "▾" : "▸" }}</span>
         </div>
       </div>
       <div class="children" v-if="open && children.length > 0">

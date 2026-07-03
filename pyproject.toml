@@ -16,7 +16,9 @@ dependencies = [
   "pyyaml",
   "redis",
   "tifffile",
-  "mxtifffile"
+  "mxtifffile",
+  "ldap3",
+  "itsdangerous"
 ]
 
 [build-system]

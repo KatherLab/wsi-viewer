@@ -23,6 +23,8 @@ const app = createApp({
       filteredSlides:[],
       visibleSlides:[],
       slideSearch:"",
+      dirDenied: false,   // true when /api/dir returned 403 (no list permission)
+      dirLoaded: false,   // true once a directory has been loaded (even if empty)
 
       // View modes
       viewMode:'grid',
@@ -36,6 +38,7 @@ const app = createApp({
       hasScale:false,
       showSidebar:true,
       slideMeta:null,
+      zoomFloor:0,            // min safe DZI level (>0 for single-level slides)
       associatedImages:[],
       qptiffMarkers: [],      // all available markers
       qptiffMarkerColors: {}, // active marker → color mapping
@@ -82,6 +85,9 @@ const app = createApp({
       pendingRequests: new Map(),
       requestQueue: [],
       loadingSlides: new Set(),
+
+      // Auth: current logged-in user (null when auth disabled / unknown)
+      currentUser: null,
 
       // Thumbnail queue/concurrency control
       thumbSlots: 4,
@@ -208,6 +214,13 @@ const app = createApp({
   },
 
   methods: {
+    // Auth: sign out and return to the login page.
+    async logout(){
+      try { await fetch('/api/logout', {method: 'POST', credentials: 'same-origin'}); }
+      catch(e) { /* ignore — proceed to redirect anyway */ }
+      window.location.href = '/login';
+    },
+
     // Utility methods
     prettySize(b){
       if(!b && b!==0) return "";
@@ -259,14 +272,26 @@ const app = createApp({
       // free existing blobs and reset
       this.visibleSlides.forEach(s => this.revokeThumb(s));
       this.visibleSlides = [];
+      this.dirDenied = false;
+      this.dirLoaded = false;
 
       try {
         const response = await this.makeRequest("/api/dir?" + new URLSearchParams({path}));
+        if (response.status === 403) {
+          // Per-user ACL denial: this directory is not listable for this user.
+          this.slides = [];
+          this.filteredSlides = [];
+          this.dirDenied = true;
+          this.showToast(`No access to this directory`);
+          return;
+        }
         if (response.ok) {
           this.slides = await response.json();
           this.filteredSlides = [...this.slides];
+          this.dirLoaded = true;
           this.currentPage = 1;
           this.slideSearch = "";
+          this.dirDenied = false;
           this.initializeView();
         }
       } catch (e) {
@@ -453,12 +478,18 @@ const app = createApp({
 
       if(this.osd){ this.osd.destroy(); this.osd=null }
 
+      // Single-level / shallow-pyramid slides: the backend reports the coarsest
+      // safe DZI level. Coarser tiles would decode gigabytes and OOM, so we
+      // forbid zooming out below it.
+      const minLevel = this.slideMeta?.min_safe_level || 0;
+      this.zoomFloor = minLevel;
+
       if (isQptiff) {
         // For QPTIFF, use custom tile source with channel query params
         const tileSource = await this._buildQptiffTileSource(id);
-        this.osd = createOsdViewer(tileSource);
+        this.osd = createOsdViewer(tileSource, { minLevel });
       } else {
-        this.osd = createOsdViewer("/dzi/" + id + ".dzi");
+        this.osd = createOsdViewer("/dzi/" + id + ".dzi", { minLevel });
       }
 
       // Attach the ruler only if slide scale is known
@@ -796,20 +827,30 @@ const app = createApp({
   mounted(){
     window.vueApp = this;
 
+    // Fetch the logged-in user for the header sign-out button.
+    fetch('/api/me', {credentials: 'same-origin'})
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d && d.username) this.currentUser = d.username; })
+      .catch(() => {});
+
     // Restore persisted UI preferences (view mode, sidebar, page size)
     const prefs = this.loadPrefs();
     if (prefs.viewMode === 'grid' || prefs.viewMode === 'list') this.viewMode = prefs.viewMode;
     if (typeof prefs.showSidebar === 'boolean') this.showSidebar = prefs.showSidebar;
     if (Number.isFinite(prefs.itemsPerPage) && prefs.itemsPerPage > 0) this.itemsPerPage = prefs.itemsPerPage;
 
-    this.loadTrees();
+    // Load the tree first, THEN restore from a share URL. We must await
+    // loadTrees() because openDir() (called during restore) cancels all
+    // in-flight requests — if /api/tree is still pending it gets aborted and
+    // the tree never renders.
+    (async () => {
+      await this.loadTrees();
 
-    // Restore directory + slide + viewport from a share URL once trees load
-    const share = this.readShareParams();
-    if (share) {
-      this._restoringFromUrl = true;
-      this._shareViewport = share.viewport;
-      const tryRestore = async () => {
+      // Restore directory + slide + viewport from a share URL once trees load
+      const share = this.readShareParams();
+      if (share) {
+        this._restoringFromUrl = true;
+        this._shareViewport = share.viewport;
         try {
           if (share.dir) {
             // Open the directory first (loads slide list). Set selectedPath so
@@ -822,9 +863,8 @@ const app = createApp({
           }
         } catch(e) { console.warn('Failed to restore shared location', e); }
         finally { this._restoringFromUrl = false; }
-      };
-      this.$nextTick(() => setTimeout(tryRestore, 0));
-    }
+      }
+    })();
 
     // Keyboard shortcuts (viewer only; ignore when typing in inputs)
     window.addEventListener('keydown', (e) => this.handleKey(e));

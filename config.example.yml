@@ -38,3 +38,28 @@ thumbnails:
   prefer_associated: true
 
 cors_allow_origins: ["*"]
+
+# Authentication & authorization.
+# When enabled=false, ALL requests are anonymous full-access (dev/legacy).
+# All auth config lives here in config.yml (config.yml is gitignored, so secrets
+# are safe). Generate a session secret with:  openssl rand -hex 32
+auth:
+  enabled: true
+  # FreeIPA LDAP. Use ldaps:// (TLS) or ldap:// (StartTLS) in production.
+  ldap_url: "ldaps://ipa.example.com"
+  # Bind DN template — {username} is substituted with the login username.
+  # Default FreeIPA user layout; replace the DC suffix with yours.
+  user_dn_template: "uid={username},cn=users,cn=accounts,dc=example,dc=com"
+  # Groups are NOT resolved from LDAP: the NFS server resolves group membership
+  # server-side from the UID, so we only need uid+primary gid (read from the
+  # user entry after a successful bind).
+  # Session cookie signing secret. MUST be set when enabled=true.
+  session_secret: "CHANGE_ME_run_openssl_rand_hex_32"
+  session_ttl: 86400         # seconds
+  # Redis TTLs for authz decisions (cached per user+path).
+  authz_ttl: 300             # allow
+  authz_ttl_deny: 60         # deny (shorter so newly-granted access propagates)
+  # aclcheckd daemon socket (started by the container entrypoint as root).
+  acl_socket: "/run/wsi/aclcheck.sock"
+  check_timeout: 5.0         # seconds per access check
+

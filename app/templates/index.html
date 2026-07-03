@@ -21,6 +21,10 @@
     </div>
     <div style="flex:1"></div>
     <span v-if="activeRequests > 0" class="loading-badge">{{ activeRequests }} loading</span>
+    <div v-if="currentUser" class="user-menu">
+      <span class="user-name">{{ currentUser }}</span>
+      <button class="logout-btn" @click="logout">Sign out</button>
+    </div>
   </header>
 
   <div class="container">
@@ -173,7 +177,9 @@
           <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="opacity:.4">
             <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path>
           </svg>
-          <span v-if="!slides.length">Select a folder containing slides</span>
+          <span v-if="dirDenied" style="color:#dc2626">🔒 You don't have access to this directory</span>
+          <span v-else-if="!dirLoaded">Select a folder containing slides</span>
+          <span v-else-if="!slides.length">This folder contains no slides</span>
           <span v-else>No slides match your search</span>
         </div>
       </template>
@@ -184,6 +190,12 @@
           <div id="osd" aria-label="Slide viewer"></div>
           <canvas id="ruler" class="overlay" v-show="hasScale"></canvas>
           <canvas id="meas-overlay" class="overlay" v-show="measuring || measurements.length" style="z-index:11"></canvas>
+
+          <!-- Single-level slide: no low-res pyramid, coarse tiles are unsafe -->
+          <div class="zoom-floor-hint" v-if="zoomFloor > 0" role="note">
+            This slide has no low-resolution pyramid levels. The full-slide
+            overview is unavailable — zoom in to pan.
+          </div>
 
           <!-- Back button -->
           <button class="back-btn" @click="closeViewer" title="Back to grid (Esc)" aria-label="Back to grid">

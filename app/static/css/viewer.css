@@ -33,3 +33,6 @@ canvas.overlay{position:absolute;inset:0;pointer-events:none;z-index:10}
 /* Measurement overlay */
 .meas-active{cursor:crosshair}
 .meas-readout{position:absolute;pointer-events:none;background:rgba(17,24,39,0.85);color:#fff;padding:3px 8px;border-radius:6px;font-size:0.78rem;font-weight:600;z-index:12;white-space:nowrap;transform:translate(8px,8px)}
+
+/* Single-level slide: no low-res pyramid available — hint banner */
+.zoom-floor-hint{position:absolute;top:16px;left:50%;transform:translateX(-50%);z-index:18;max-width:min(560px,80vw);background:rgba(17,24,39,.9);color:#fff;padding:.5rem .9rem;border-radius:8px;font-size:.8rem;line-height:1.3;text-align:center;box-shadow:var(--shadow);pointer-events:none}

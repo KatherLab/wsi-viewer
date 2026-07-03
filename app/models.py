@@ -32,3 +32,7 @@ class SlideMeta(BaseModel):
     slide_label: str | None = None
     quickhash: str | None = None
     pyramid: list[dict] | None = None
+    # Coarsest DZI level safe to render (0 = no floor). >0 for single-level /
+    # shallow-pyramid slides whose coarse tiles would decode gigabytes; the
+    # frontend forbids zooming out below this level.
+    min_safe_level: int = 0

@@ -11,8 +11,19 @@ export const requestMethods = {
     try {
       const response = await fetch(url, {
         signal: controller.signal,
+        credentials: 'same-origin',  // send the signed session cookie
         headers: {'X-Priority': priority.toString()}
       });
+
+      // Auth: a 401 means no/invalid session — bounce to the login page.
+      // We do this only for API/data calls, not for the index page itself.
+      if (response.status === 401 && !url.startsWith('/login')) {
+        const next = encodeURIComponent(window.location.pathname + window.location.search);
+        window.location.href = '/login?next=' + next + '&reason=auth';
+        // Throw so callers stop processing a response they'll never read.
+        throw new Error('unauthorized');
+      }
+
       return response;
     } finally {
       this.pendingRequests.delete(requestId);

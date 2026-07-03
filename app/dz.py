@@ -7,6 +7,16 @@ import openslide
 from openslide.deepzoom import DeepZoomGenerator
 from PIL import Image
 
+# Per-tile source-pixel safety cap. OpenSlide's DeepZoomGenerator downsamples a
+# tile from the LARGEST available pyramid level; for a single-level
+# (non-pyramidal) slide a coarse (zoomed-out) tile therefore decodes a
+# 256×downsample full-res region — gigabytes at low zoom. We forbid DZI levels
+# whose per-tile source region exceeds this cap, enforced BOTH in the frontend
+# (OpenSeadragon minLevel) and the backend (the /dzi tile route 404s below the
+# floor) so a coarse tile can never be decoded regardless of client behaviour.
+# 4 Mpx → ~12 MB worst-case decode per tile; conservative under 12 concurrent.
+TILE_MAX_SRC_PIXELS = 4_000_000
+
 # ------------------------------------------------------------------ #
 # Backward-compat re-exports from the deepzoom_backends package
 # ------------------------------------------------------------------ #
@@ -46,12 +56,60 @@ class DZ:
     def level_count(self) -> int:
         return self.dz.level_count
 
+    def min_safe_level(self) -> int:
+        """Coarsest DZI level whose tiles decode <= TILE_MAX_SRC_PIXELS.
+
+        Returns 0 for normal pyramidal slides (coarsest levels read from a
+        small native level, so they're cheap). For single-level /
+        shallow-pyramid slides, coarse DZI levels read a huge region from the
+        only (full-res) native level and would decode gigabytes — returns the
+        finest level whose source region fits the cap. The frontend forbids
+        zooming out below this level.
+
+        Decode size for a DZI level is (tile_size × _l_z_downsamples[L]),
+        clamped to the native level's dimensions — matching what
+        DeepZoomGenerator actually passes to OpenSlide.read_region().
+        """
+        dz = self.dz
+        levels = dz.level_count
+        if levels == 0:
+            return 0
+        # Private DeepZoomGenerator internals: per-DZ-level native slide level
+        # and native-px-per-tile-px downsample. Stable across openslide-python
+        # 1.x; guard with getattr in case of future rename.
+        slide_from_dz = getattr(dz, "_slide_from_dz_level", None)
+        l_z_downsamples = getattr(dz, "_l_z_downsamples", None)
+        if slide_from_dz is None or l_z_downsamples is None:
+            return 0  # can't introspect -> don't restrict
+        tile = self.tile_size
+        for lvl in range(levels):
+            native = slide_from_dz[lvl]
+            nw, nh = self.slide.level_dimensions[native]
+            ds = tile * l_z_downsamples[lvl]
+            # read_region clamps each axis to the native level dimensions, so
+            # the actual decode is the per-axis-clamped rectangle.
+            src_w = min(ds, nw)
+            src_h = min(ds, nh)
+            if src_w * src_h <= TILE_MAX_SRC_PIXELS:
+                return lvl
+        return levels - 1
+
     def dzi_xml(self) -> str:
         return self.dz.get_dzi("jpeg")
 
     def tile_jpeg(self, level: int, x: int, y: int) -> bytes:
         if level < 0 or level >= self.level_count:
             raise ValueError(f"Invalid DZI level {level}")
+
+        # Backend-enforced safety floor: never decode a tile below the safe
+        # level, regardless of what the client requests. Coarse tiles on a
+        # single-level slide decode gigabytes. Instead of erroring (which
+        # spams the logs and makes OpenSeadragon treat zoom-out as a failure),
+        # return a blank white tile — OSD renders it harmlessly and the route
+        # can cache it like any other tile. No decode, no OOM, no noise.
+        floor = self.min_safe_level()
+        if level < floor:
+            return self._blank_tile()
 
         tile = self.dz.get_tile(level, (x, y))
         if tile.mode != "RGB":
@@ -60,3 +118,14 @@ class DZ:
         buf = io.BytesIO()
         tile.save(buf, format="JPEG", quality=85)
         return buf.getvalue()
+
+    def _blank_tile(self) -> bytes:
+        """A cached blank white tile, returned for sub-floor (unsafe) levels."""
+        cached = getattr(self, "_blank_tile_bytes", None)
+        if cached is None:
+            img = Image.new("RGB", (self.tile_size, self.tile_size), (255, 255, 255))
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            cached = buf.getvalue()
+            self._blank_tile_bytes = cached
+        return cached

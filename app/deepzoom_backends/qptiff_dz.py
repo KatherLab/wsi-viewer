@@ -144,6 +144,16 @@ class QptiffDZ:
         if callable(close):
             close()
 
+    def min_safe_level(self) -> int:
+        """Coarsest DZI level safe to render (0 = no floor).
+
+        QPTIFF/multiplex tiles read by native pyramid level (not OpenSlide
+        downsample), so coarse levels are not inherently expensive the way
+        single-level OpenSlide slides are. Returns 0 for now; the unbounded
+        native-level read in tile_jpeg/thumbnail_jpeg is a separate concern.
+        """
+        return 0
+
     def get_markers(self) -> list[str]:
         """
         Return usable display channel names.

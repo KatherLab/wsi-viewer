@@ -12,7 +12,7 @@ from typing import Optional
 import stat as statmod
 import io
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +29,8 @@ from .deepzoom_backends.factory import QPTIFF_EXTS
 from .dz import DZ, MxTiffDZ, QptiffDZ, QptiffPool, is_multiplex_tiff, probe_is_multiplex_tiff, make_dz
 from .models import SlideMeta, Node
 from .path_cache import PathCache
+from .auth import Authenticator, Principal, make_current_principal
+from .authz import Authz
 
 # --------------------------------------------------------------------------- #
 # Logging
@@ -148,6 +150,12 @@ path_cache_file = Path("/tmp/wsi_path_cache.json")
 ns_hash = hashlib.sha1(str(CFG_PATH).encode()).hexdigest()[:12]
 PATHCACHE_NS = f"wsi:path:{ns_hash}"
 path_cache = PathCache(getattr(cache, "client", None), PATHCACHE_NS, path_cache_file, lru_cap=100_000)
+
+# --------------------------------------------------------------------------- #
+# Auth: LDAP login (authn) + aclcheckd-backed per-user read/list checks (authz).
+authenticator = Authenticator(cfg.auth)
+authz = Authz(cfg.auth, cache)
+current_principal = make_current_principal(authenticator)
 
 def load_path_cache():
     """Load path cache from disk if Redis is disabled."""
@@ -272,12 +280,20 @@ app.add_middleware(
 async def track_requests(request: Request, call_next):
     request_id = id(request)
     active_requests[request_id] = {"cancelled": False, "start_time": time.time()}
-    watcher = asyncio.create_task(_watch_disconnect(request, request_id))
+    # The disconnect watcher probes the ASGI receive stream via
+    # request.is_disconnected(), which calls await receive(). On requests that
+    # READ A BODY (e.g. POST /api/login -> request.json()), that probe steals
+    # the body chunk the handler is waiting for -> deadlock. So only run the
+    # watcher for bodyless requests (GET/HEAD).
+    watcher = None
+    if request.method in ("GET", "HEAD"):
+        watcher = asyncio.create_task(_watch_disconnect(request, request_id))
     try:
         response = await call_next(request)
         return response
     finally:
-        watcher.cancel()
+        if watcher is not None:
+            watcher.cancel()
         active_requests.pop(request_id, None)
 
 # --------------------------------------------------------------------------- #
@@ -374,6 +390,88 @@ def update_path_cache_from_dir(dir_path: Path, extensions: list[str]):
     except Exception as e:
         log.debug(f"Could not update path cache for {dir_path}: {e}")
 
+
+def _build_children_from_entries(dir_path: Path, entries: list[dict]) -> tuple[list[Node], int]:
+    """Build child Nodes + slide_count from a pre-fetched entry list.
+
+    `entries` is [{"name","is_dir"}] (as returned by authz.list_dir). Applies
+    exclude patterns and extension matching the same way as the service-user
+    scandir in fs_index.scan_directory_shallow_optimized, but without touching
+    the filesystem — the listing was already produced as the impersonated user,
+    so the kernel/NFS already filtered what this user can see.
+    """
+    from .fs_index import should_skip
+
+    children: list[Node] = []
+    slide_count = 0
+    for e in entries:
+        name = e["name"]
+        if should_skip(name, cfg.exclude):
+            continue
+        is_dir = e.get("is_dir", False)
+        if is_dir:
+            # Optimistic has_children (existing behaviour) — the real filtered
+            # contents surface at /api/expand time, also per-user.
+            children.append(Node(
+                id=stable_id_from_path(Path(dir_path) / name),
+                name=name,
+                path=str(Path(dir_path) / name),
+                is_dir=True,
+                children=None,
+                slide_count=0,
+                has_children=True,
+            ))
+        else:
+            name_lower = name.lower()
+            if any(name_lower.endswith(ext) for ext in EXTS):
+                slide_count += 1
+    return children, slide_count
+
+
+def scan_directory_as_user(dir_path: Path, principal: Optional[Principal]) -> tuple[list[Node], int]:
+    """Per-user shallow scan. Falls back to service-user scandir when auth off.
+
+    When a principal is present, the directory listing is obtained by
+    aclcheckd (forked scandir as that user) so denied entries never appear.
+    The path_cache is NOT populated here, because we cannot stat files as the
+    service user without re-authorizing — slide_id resolution still works via
+    the bounded walk fallback, which itself runs as the service user. (See
+    note in plan: path_cache is identity, not authz.)
+    """
+    if principal is None:
+        # Auth disabled: legacy service-user scan (populates path cache too).
+        update_path_cache_from_dir(dir_path, list(EXTS))
+        return scan_directory_shallow_optimized(dir_path, list(EXTS), cfg.exclude)
+
+    entries = authz.list_dir(principal, str(dir_path))
+    log.info("scan_directory_as_user uid=%s path=%s -> %d entries",
+             principal.uid, dir_path, len(entries) if entries is not None else -1)
+    if entries is None:
+        # list_dir returned None only when auth disabled (handled above); treat
+        # any denial/empty as an empty listing for this user.
+        return [], 0
+    return _build_children_from_entries(dir_path, entries)
+    # NOTE: a real access denial (EACCES) raises PermissionError from list_dir;
+    # callers (api_tree/api_expand) catch it and return 403.
+
+
+def resolve_and_authorize(slide_id: str, principal: Optional[Principal]) -> Path:
+    """Resolve slide_id -> Path, then enforce per-user read authorization.
+
+    Order is critical: resolve first (this validates format + under-root), then
+    the authz check, BEFORE any tile/thumb cache lookup. A 404 is returned for
+    both not-found and denied to avoid leaking existence of gated slides.
+    """
+    try:
+        p = resolve_by_id_with_fallback(slide_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "Slide not found")
+
+    if not authz.can_read(principal, str(p)):
+        # 404 (not 403) to avoid confirming the slide exists to an unauthorized user.
+        raise HTTPException(404, "Slide not found")
+    return p
+
 async def run_with_timeout(func, *args, timeout=30, **kwargs):
     """Run a blocking function in executor with timeout."""
     import functools
@@ -396,9 +494,79 @@ async def run_with_timeout(func, *args, timeout=30, **kwargs):
 async def index(request: Request):
     return templates.TemplateResponse(request, "index.html", {"roots": ROOTS})
 
+# --------------------------------------------------------------------------- #
+# Auth routes
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    """Minimal login form. Served as a separate page; 401 redirects here."""
+    return templates.TemplateResponse(request, "login.html", {"auth_enabled": cfg.auth.enabled})
+
+@app.post("/api/login")
+async def api_login(request: Request):
+    """Authenticate against FreeIPA LDAP, issue a signed session cookie."""
+    import time as _t
+    t0 = _t.time()
+    log.info("LOGIN start")
+    try:
+        body = await request.json()
+        log.info("LOGIN parsed body after %.2fs (username=%r)", _t.time()-t0, str(body.get("username","")))
+    except Exception:
+        raise HTTPException(400, "Invalid request body")
+    username = str(body.get("username", "")).strip()
+    password = str(body.get("password", ""))
+
+    if not cfg.auth.enabled:
+        # Dev/legacy mode: no real auth. Return ok without a cookie; the app
+        # treats all requests as anonymous-full-access.
+        return {"ok": True, "username": username or "anonymous", "auth_enabled": False}
+
+    if not username or not password:
+        raise HTTPException(400, "Username and password required")
+
+    log.info("LOGIN calling _ldap_login for %r at %.2fs", username, _t.time()-t0)
+    try:
+        principal = await run_with_timeout(
+            lambda: _ldap_login(cfg.auth, username, password), timeout=15
+        )
+    except Exception as e:
+        log.exception("LOGIN _ldap_login raised after %.2fs: %s", _t.time()-t0, e)
+        raise
+    log.info("LOGIN _ldap_login returned %s after %.2fs",
+             "principal" if principal else "None", _t.time()-t0)
+    if principal is None:
+        raise HTTPException(401, "Invalid credentials")
+
+    resp = Response(json.dumps({"ok": True, "username": principal.username}),
+                    media_type="application/json")
+    authenticator.issue_cookie(resp, principal)
+    log.info("LOGIN done (issued cookie) after %.2fs", _t.time()-t0)
+    return resp
+
+
+def _ldap_login(auth_cfg, username: str, password: str):
+    """Sync wrapper — run in executor via run_with_timeout."""
+    from .auth import _ldap_login as _impl
+    return _impl(auth_cfg, username, password)
+
+
+@app.post("/api/logout")
+async def api_logout():
+    resp = Response(json.dumps({"ok": True}), media_type="application/json")
+    authenticator.clear_cookie(resp)
+    return resp
+
+
+@app.get("/api/me")
+async def api_me(principal: Principal = Depends(current_principal)):
+    if principal is None:
+        return {"username": "anonymous", "auth_enabled": False}
+    return {"username": principal.username, "auth_enabled": True}
+
 @app.get("/api/tree")
-async def api_tree():
-    """Get root directories with shallow loading."""
+async def api_tree(principal: Principal = Depends(current_principal)):
+    """Get root directories with shallow loading (per-user when auth enabled)."""
+    # Per-user cache key segment: uid when authed, "anon" when not.
+    uid_key = str(principal.uid) if principal else "anon"
     trees = []
     for base, label in ROOTS.items():
         base_path = Path(base)
@@ -434,23 +602,39 @@ async def api_tree():
             })
             continue
 
-        k = Cache.key("tree_shallow", base)
+        # ✅ Per-user cache key — listings differ by user's ACLs.
+        k = Cache.key("tree_shallow", uid_key, base)
         try:
             raw = cache.get(k)
             if raw:
-                log.debug(f"Using cached tree for {base}")
+                log.debug(f"Using cached tree for {base} (uid={uid_key})")
                 trees.append(json.loads(raw))
                 continue
 
-            log.info(f"Building shallow tree for {base}")
+            log.info(f"Building shallow tree for {base} (uid={uid_key})")
 
-            children, slide_count = await run_with_timeout(
-                scan_directory_shallow_optimized,
-                base_path,
-                list(EXTS),
-                cfg.exclude,
-                timeout=60
-            )
+            try:
+                children, slide_count = await run_with_timeout(
+                    scan_directory_as_user,
+                    base_path,
+                    principal,
+                    timeout=60
+                )
+            except PermissionError:
+                # User cannot list this root at all (per-user ACL denial).
+                # Surface it as a locked node rather than an empty-but-openable one.
+                log.info(f"Root {base} not listable by uid={uid_key} (denied)")
+                trees.append({
+                    "id": stable_id_from_path(base_path),
+                    "name": label or base_path.name,
+                    "path": base,
+                    "is_dir": True,
+                    "children": None,
+                    "slide_count": 0,
+                    "has_children": False,  # not expandable
+                    "locked": True,         # UI hint: access denied
+                })
+                continue
 
             node = Node(
                 id=stable_id_from_path(base_path),
@@ -493,9 +677,10 @@ async def api_tree():
     return trees
 
 @app.get("/api/expand")
-async def api_expand(path: str, request: Request):
-    """Expand a directory to get its immediate children."""
+async def api_expand(path: str, request: Request, principal: Principal = Depends(current_principal)):
+    """Expand a directory to get its immediate children (per-user when auth enabled)."""
     request_id = id(request)
+    uid_key = str(principal.uid) if principal else "anon"
 
     try:
         dirp = Path(path)
@@ -507,15 +692,12 @@ async def api_expand(path: str, request: Request):
         if not dirp.exists() or not dirp.is_dir():
             raise HTTPException(404, "Directory not found")
 
-        # Update path cache while we're scanning
-        update_path_cache_from_dir(dirp, list(EXTS))
-
-        # Check cache first
-        k = Cache.key("expand", path)
+        # ✅ Per-user cache key — expansions differ by user's ACLs.
+        k = Cache.key("expand", uid_key, path)
         try:
             raw = cache.get(k)
             if raw:
-                log.debug(f"Using cached expansion for {path}")
+                log.debug(f"Using cached expansion for {path} (uid={uid_key})")
                 return json.loads(raw)
         except Exception as e:
             log.debug(f"Expand cache get failed: {e}")
@@ -523,13 +705,12 @@ async def api_expand(path: str, request: Request):
         if active_requests.get(request_id, {}).get("cancelled"):
             raise HTTPException(499, "Client closed request")
 
-        log.info(f"Expanding directory: {path}")
+        log.info(f"Expanding directory: {path} (uid={uid_key})")
 
         children, slide_count = await run_with_timeout(
-            scan_directory_shallow_optimized,
+            scan_directory_as_user,
             dirp,
-            list(EXTS),
-            cfg.exclude,
+            principal,
             timeout=30
         )
 
@@ -550,12 +731,15 @@ async def api_expand(path: str, request: Request):
 
     except HTTPException:
         raise
+    except PermissionError:
+        # User is not allowed to list this directory (per-user ACL denial).
+        raise HTTPException(403, "Access denied to this directory")
     except Exception as e:
         log.exception(f"Failed to expand directory {path}: {e}")
         raise HTTPException(500, "Failed to expand directory")
 
 @app.get("/api/dir")
-async def api_dir(path: str, request: Request):
+async def api_dir(path: str, request: Request, principal: Principal = Depends(current_principal)):
     request_id = id(request)
 
     try:
@@ -568,48 +752,59 @@ async def api_dir(path: str, request: Request):
         if not p.exists() or not p.is_dir():
             raise HTTPException(404, "Directory not found")
 
-        def list_slides_optimized():
-            entries = []
+        # Per-user: list entries as the impersonated user, then stat the slide
+        # files (stat as service user is fine for size/mtime of files we've
+        # already confirmed the user can see via the per-user listing).
+        def list_slides():
+            if principal is not None:
+                entries = authz.list_dir(principal, str(p))
+                if entries is None:
+                    entries = []
+                # Keep only files
+                file_entries = [e for e in entries if not e.get("is_dir", False)]
+            else:
+                with os.scandir(p) as scanner:
+                    file_entries = [{"name": e.name, "is_dir": e.is_dir(follow_symlinks=False)}
+                                    for e in scanner if e.is_file(follow_symlinks=False)]
 
-            with os.scandir(p) as scanner:
-                all_entries = list(scanner)
-
-            for entry in all_entries:
+            out = []
+            for e in file_entries:
                 if active_requests.get(request_id, {}).get("cancelled"):
                     break
+                name = e["name"]
+                name_lower = name.lower()
+                if not any(name_lower.endswith(ext) for ext in EXTS):
+                    continue
+                fp = Path(p) / name
+                try:
+                    stat = fp.stat()
+                except OSError:
+                    continue
+                slide_id = stable_id_from_path(fp)
+                path_cache.set(slide_id, fp)
+                out.append({
+                    "id": slide_id,
+                    "name": name,
+                    "path": str(fp),
+                    "size": stat.st_size,
+                    "mtime": int(stat.st_mtime),
+                })
+            return out
 
-                if entry.is_file(follow_symlinks=False):
-                    name_lower = entry.name.lower()
-                    is_slide = any(name_lower.endswith(ext) for ext in EXTS)
-
-                    if is_slide:
-                        stat = entry.stat(follow_symlinks=False)
-                        slide_id = stable_id_from_path(Path(entry.path))
-
-                        # Update shared path cache
-                        path_cache.set(slide_id, Path(entry.path))
-
-                        entries.append({
-                            "id": slide_id,
-                            "name": entry.name,
-                            "path": entry.path,
-                            "size": stat.st_size,
-                            "mtime": int(stat.st_mtime),
-                        })
-
-            return entries
-
-        entries = await run_with_timeout(list_slides_optimized, timeout=20)
+        entries = await run_with_timeout(list_slides, timeout=20)
         return entries
 
     except HTTPException:
         raise
+    except PermissionError:
+        # User is not allowed to list this directory (per-user ACL denial).
+        raise HTTPException(403, "Access denied to this directory")
     except Exception as e:
         log.exception("Listing failed for %s: %s", path, e)
         raise HTTPException(500, "Failed to list directory")
 
 @app.get("/api/thumb/{slide_id}")
-async def api_thumb(slide_id: str, request: Request):
+async def api_thumb(slide_id: str, request: Request, principal: Principal = Depends(current_principal)):
     priority = int(request.headers.get("X-Priority", "0"))
 
     async with thumb_semaphore:
@@ -635,10 +830,10 @@ async def api_thumb(slide_id: str, request: Request):
         if active_requests.get(request_id, {}).get("cancelled"):
             raise HTTPException(499, "Client closed request")
 
-        try:
-            p = resolve_by_id_with_fallback(slide_id)
-        except FileNotFoundError:
-            raise HTTPException(404, "Slide not found")
+        # ✅ Authz: resolve + authorize BEFORE generating the thumbnail (and
+        # before spending tile-gen time). The global thumb cache above is safe
+        # to share because we only reach it / populate it after authorization.
+        p = resolve_and_authorize(slide_id, principal)
 
         # ✅ Fix #5: Compute ETag from stable inputs BEFORE generating the thumbnail
         mtime_str = _get_mtime_str(p)
@@ -754,11 +949,8 @@ def _derive_pyramid(props: dict, level_count: int) -> list[dict]:
 
 
 @app.get("/api/meta/{slide_id}")
-async def api_meta(slide_id: str):
-    try:
-        p = resolve_by_id_with_fallback(slide_id)
-    except FileNotFoundError:
-        raise HTTPException(404, "Slide not found")
+async def api_meta(slide_id: str, principal: Principal = Depends(current_principal)):
+    p = resolve_and_authorize(slide_id, principal)
 
     def get_metadata():
         if is_multiplex_tiff(p):
@@ -782,6 +974,7 @@ async def api_meta(slide_id: str):
                 mpp_y=None,
                 created_ts=p.stat().st_mtime,
                 file_size=file_size,
+                min_safe_level=dz.min_safe_level(),
             )
 
         slide = slide_pool.get(p)
@@ -819,6 +1012,7 @@ async def api_meta(slide_id: str):
             slide_label=_derive_slide_label(slide.properties),
             quickhash=slide.properties.get("openslide.quickhash-1"),
             pyramid=_derive_pyramid(slide.properties, slide.level_count),
+            min_safe_level=make_dz(p, slide_pool).min_safe_level(),
         )
 
     try:
@@ -829,7 +1023,7 @@ async def api_meta(slide_id: str):
         raise HTTPException(500, "Failed to read metadata")
 
 @app.get("/api/properties/{slide_id}")
-async def api_properties(slide_id: str):
+async def api_properties(slide_id: str, principal: Principal = Depends(current_principal)):
     """Return the raw vendor/property dictionary for a slide.
 
     Surfaces OpenSlide's full properties map (barcodes, comments, resolutions,
@@ -837,10 +1031,7 @@ async def api_properties(slide_id: str):
     OpenSlide properties map, a best-effort set of mxtifffile metadata is
     returned instead.
     """
-    try:
-        p = resolve_by_id_with_fallback(slide_id)
-    except FileNotFoundError:
-        raise HTTPException(404, "Slide not found")
+    p = resolve_and_authorize(slide_id, principal)
 
     def get_properties():
         props: dict[str, str] = {}
@@ -877,11 +1068,8 @@ async def api_properties(slide_id: str):
         raise HTTPException(500, "Failed to read properties")
 
 @app.get("/api/associated/{slide_id}")
-async def api_associated_list(slide_id: str):
-    try:
-        p = resolve_by_id_with_fallback(slide_id)
-    except FileNotFoundError:
-        raise HTTPException(404, "Slide not found")
+async def api_associated_list(slide_id: str, principal: Principal = Depends(current_principal)):
+    p = resolve_and_authorize(slide_id, principal)
 
     def get_associated():
         if is_multiplex_tiff(p):
@@ -897,11 +1085,8 @@ async def api_associated_list(slide_id: str):
         raise HTTPException(500, "Failed to list associated images")
 
 @app.get("/api/associated/{slide_id}/{image_name}")
-async def api_associated_image(slide_id: str, image_name: str):
-    try:
-        p = resolve_by_id_with_fallback(slide_id)
-    except FileNotFoundError:
-        raise HTTPException(404, "Slide not found")
+async def api_associated_image(slide_id: str, image_name: str, principal: Principal = Depends(current_principal)):
+    p = resolve_and_authorize(slide_id, principal)
 
     def get_image():
         if is_multiplex_tiff(p):
@@ -947,11 +1132,8 @@ async def logo(request: Request):
 # --------------------------------------------------------------------------- #
 # Deep-Zoom endpoints
 @app.get("/dzi/{slide_id}.dzi")
-async def dzi_xml(slide_id: str, request: Request):
-    try:
-        p = resolve_by_id_with_fallback(slide_id)
-    except FileNotFoundError:
-        raise HTTPException(404, "Slide not found")
+async def dzi_xml(slide_id: str, request: Request, principal: Principal = Depends(current_principal)):
+    p = resolve_and_authorize(slide_id, principal)
 
     def get_dzi():
         dz = make_dz(p, slide_pool)
@@ -987,6 +1169,7 @@ async def dzi_tile(
     x: int,
     y: int,
     request: Request,
+    principal: Principal = Depends(current_principal),
     channels: Optional[str] = None,
     colors: Optional[str] = None,
     mins: Optional[str] = None,
@@ -1000,6 +1183,12 @@ async def dzi_tile(
             p_for_etag = resolve_by_id_with_fallback(slide_id)
             mtime_str = _get_mtime_str(p_for_etag)
         except FileNotFoundError:
+            raise HTTPException(404, "Slide not found")
+
+        # ✅ Authz: enforce per-user read access BEFORE the global tile cache
+        # lookup / ETag short-circuit. The tile cache is shared across users
+        # and only safe to read because we authorize here first.
+        if not authz.can_read(principal, str(p_for_etag)):
             raise HTTPException(404, "Slide not found")
 
         backend_key = "mxtiff" if is_multiplex_tiff(p_for_etag) else "openslide"
@@ -1111,11 +1300,8 @@ async def dzi_tile(
 
 # --------------------------------------------------------------------------- #
 @app.get("/api/markers/{slide_id}")
-async def api_markers(slide_id: str):
-    try:
-        p = resolve_by_id_with_fallback(slide_id)
-    except FileNotFoundError:
-        raise HTTPException(404, "Slide not found")
+async def api_markers(slide_id: str, principal: Principal = Depends(current_principal)):
+    p = resolve_and_authorize(slide_id, principal)
 
     if not is_multiplex_tiff(p):
         return {
@@ -1162,12 +1348,9 @@ async def api_markers(slide_id: str):
 
 # --------------------------------------------------------------------------- #
 @app.get("/api/qptiff/{slide_id}/channels")
-async def api_qptiff_channels(slide_id: str):
+async def api_qptiff_channels(slide_id: str, principal: Principal = Depends(current_principal)):
     """Returns marker/channel info for a QPTIFF slide."""
-    try:
-        p = resolve_by_id_with_fallback(slide_id)
-    except FileNotFoundError:
-        raise HTTPException(404, "Slide not found")
+    p = resolve_and_authorize(slide_id, principal)
 
     if not is_multiplex_tiff(p):
         raise HTTPException(400, "Not a QPTIFF file")

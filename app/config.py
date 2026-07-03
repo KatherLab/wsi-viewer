@@ -24,6 +24,26 @@ class ThumbCfg(BaseModel):
     prefer_associated: bool = True
 
 
+class AuthCfg(BaseModel):
+    # Master switch. When False, ALL requests are treated as anonymous-full-access
+    # (legacy/dev mode). When True, every data endpoint requires a valid session
+    # and passes a per-user authz check.
+    enabled: bool = False
+    ldap_url: str = "ldaps://ipa.example.com"
+    # Bind as this DN template, {username} substituted. FreeIPA default layout.
+    user_dn_template: str = "uid={username},cn=users,cn=accounts,dc=example,dc=com"
+    # Session cookie signing secret. MUST be set when enabled=true.
+    session_secret: str | None = None
+    session_ttl: int = 86400
+    # Redis TTLs for authz decisions (seconds).
+    authz_ttl: int = 300
+    authz_ttl_deny: int = 60
+    # Unix socket for the aclcheckd daemon.
+    acl_socket: str = "/run/wsi/aclcheck.sock"
+    # Per-check timeout talking to aclcheckd.
+    check_timeout: float = 5.0
+
+
 class AppCfg(BaseSettings):
     roots: list[RootCfg]
     exclude: list[str] = []
@@ -31,6 +51,7 @@ class AppCfg(BaseSettings):
     cache: CacheCfg = CacheCfg()
     thumbnails: ThumbCfg = ThumbCfg()
     cors_allow_origins: list[str] = ["*"]
+    auth: AuthCfg = AuthCfg()
 
 
     @staticmethod

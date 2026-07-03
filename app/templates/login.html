@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WSI Browser — Login</title>
+  <link rel="stylesheet" href="/static/css/base.css" />
+  <style>
+    .login-wrap {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg, #11151c);
+      color: var(--fg, #e6e9ef);
+      font-family: system-ui, sans-serif;
+    }
+    .login-card {
+      background: var(--panel-bg, #1b2230);
+      border: 1px solid var(--border, #2a3346);
+      border-radius: 12px;
+      padding: 32px 36px;
+      width: 360px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+    }
+    .login-card h1 { margin: 0 0 4px; font-size: 20px; }
+    .login-card p.sub { margin: 0 0 24px; font-size: 13px; opacity: 0.6; }
+    .login-card label { display: block; font-size: 12px; margin: 12px 0 4px; opacity: 0.8; }
+    .login-card input {
+      width: 100%; box-sizing: border-box; padding: 9px 11px; border-radius: 7px;
+      border: 1px solid var(--border, #2a3346); background: var(--input-bg, #0f141c);
+      color: inherit; font-size: 14px;
+    }
+    .login-card button {
+      margin-top: 20px; width: 100%; padding: 10px; border: 0; border-radius: 7px;
+      background: var(--accent, #3b82f6); color: #fff; font-weight: 600; cursor: pointer;
+      font-size: 14px;
+    }
+    .login-card button:disabled { opacity: 0.6; cursor: default; }
+    .login-error { color: #f87171; font-size: 13px; margin-top: 14px; min-height: 16px; }
+    .login-card .logo { display:flex; align-items:center; gap:10px; margin-bottom: 6px; }
+    .login-card .logo img { height: 28px; }
+  </style>
+</head>
+<body>
+  <div class="login-wrap">
+    <form class="login-card" id="loginForm" autocomplete="on">
+      <div class="logo">
+        <img src="/logo" alt="logo" onerror="this.style.display='none'" />
+        <h1>WSI Browser</h1>
+      </div>
+      <p class="sub">Sign in with your FreeIPA / domain credentials.</p>
+
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username"
+             autofocus required />
+
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password"
+             required />
+
+      <button type="submit" id="submitBtn">Sign in</button>
+      <div class="login-error" id="error"></div>
+    </form>
+  </div>
+
+  <script>
+    const form = document.getElementById('loginForm');
+    const errEl = document.getElementById('error');
+    const btn = document.getElementById('submitBtn');
+
+    // If we were bounced here due to a 401 (expired/missing session), say so.
+    const params = new URLSearchParams(location.search);
+    if (params.get('reason') === 'auth') {
+      errEl.textContent = 'Your session has expired. Please sign in again.';
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errEl.textContent = '';
+      btn.disabled = true;
+      btn.textContent = 'Signing in…';
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+      try {
+        const resp = await fetch('/api/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({username, password})
+        });
+        if (resp.ok) {
+          // Redirect to the app. Preserve any original ?next= target.
+          const next = params.get('next') || '/';
+          window.location.href = next;
+        } else if (resp.status === 401) {
+          errEl.textContent = 'Invalid username or password.';
+        } else {
+          // Best-effort: surface the server's error detail if present.
+          let detail = '';
+          try { detail = (await resp.json()).detail || ''; } catch (_) {}
+          errEl.textContent = 'Login failed' + (detail ? (': ' + detail) : ' (HTTP ' + resp.status + ').');
+        }
+      } catch (err) {
+        errEl.textContent = 'Network error: ' + err.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Sign in';
+      }
+    });
+  </script>
+</body>
+</html>
