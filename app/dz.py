@@ -12,10 +12,19 @@ from PIL import Image
 # (non-pyramidal) slide a coarse (zoomed-out) tile therefore decodes a
 # 256×downsample full-res region — gigabytes at low zoom. We forbid DZI levels
 # whose per-tile source region exceeds this cap, enforced BOTH in the frontend
-# (OpenSeadragon minLevel) and the backend (the /dzi tile route 404s below the
-# floor) so a coarse tile can never be decoded regardless of client behaviour.
-# 4 Mpx → ~12 MB worst-case decode per tile; conservative under 12 concurrent.
-TILE_MAX_SRC_PIXELS = 4_000_000
+# (OpenSeadragon minLevel) and the backend (the /dzi tile route returns a blank
+# tile below the floor) so a coarse tile can never be decoded regardless of
+# client behaviour.
+#
+# The cap must sit ABOVE the smallest native (thumbnail) level of normal WSI
+# pyramids — coarse DZI levels legitimately decode that whole small level
+# (typically 2–25 Mpx across SVS/NDPI/SCN/…). It must sit BELOW the genuine
+# single-level / shallow-pyramid danger zone, where a coarse tile reads a huge
+# region of the full-res native level (≥100 Mpx, often Gpx). 64 Mpx lands in
+# that gap with margin. Memory is safe: coarse levels have only a handful of
+# tiles (≤16) so they never hit the 12-wide concurrent decode limit — that's
+# reached only at fine levels, where each tile decodes a tiny 256×256 region.
+TILE_MAX_SRC_PIXELS = 64_000_000
 
 # ------------------------------------------------------------------ #
 # Backward-compat re-exports from the deepzoom_backends package
@@ -60,11 +69,12 @@ class DZ:
         """Coarsest DZI level whose tiles decode <= TILE_MAX_SRC_PIXELS.
 
         Returns 0 for normal pyramidal slides (coarsest levels read from a
-        small native level, so they're cheap). For single-level /
-        shallow-pyramid slides, coarse DZI levels read a huge region from the
-        only (full-res) native level and would decode gigabytes — returns the
-        finest level whose source region fits the cap. The frontend forbids
-        zooming out below this level.
+        small native thumbnail level, so they're cheap — the cap is sized to
+        sit above typical thumbnail-level sizes, see TILE_MAX_SRC_PIXELS). For
+        single-level / shallow-pyramid slides, coarse DZI levels read a huge
+        region from the only (full-res) native level and would decode
+        gigabytes — returns the finest level whose source region fits the cap.
+        The frontend forbids zooming out below this level.
 
         Decode size for a DZI level is (tile_size × _l_z_downsamples[L]),
         clamped to the native level's dimensions — matching what
