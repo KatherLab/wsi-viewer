@@ -4,3 +4,5 @@ slides/
 config.yml
 docker-compose-local.yml
 .env
+
+.claude/
