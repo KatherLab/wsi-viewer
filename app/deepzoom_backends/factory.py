@@ -39,14 +39,51 @@ def _looks_like_vectra_component_metadata(text: str) -> bool:
     return any(n in text for n in needles)
 
 
+def _looks_like_multichannel_ome(tif) -> bool:
+    """
+    Return True for OME-TIFFs that store multiple channels separately.
+
+    mxtifffile can read OME-TIFF channels individually (like QPTIFF), giving
+    the channel-toggle / per-channel display features. RGB brightfield
+    OME-TIFFs (interleaved samples, e.g. axes "YXS") are left to OpenSlide,
+    which renders their colour correctly.
+
+    Routing rule:
+    - >= 2 channels (C axis)          -> multiplex backend
+    - RGB interleaved (>= 3 samples)  -> OpenSlide
+    - single-channel intensity image  -> multiplex backend (OpenSlide often
+      only surfaces one plane of these and can't normalise them)
+    """
+    if not getattr(tif, "is_ome", False):
+        return False
+
+    try:
+        series = tif.series[0]
+        axes = getattr(series, "axes", "") or ""
+        shape = tuple(int(v) for v in series.shape)
+    except Exception:
+        # is_ome is set but the series is unreadable; let mxtifffile try.
+        return True
+
+    n_channels = shape[axes.index("C")] if "C" in axes and axes.index("C") < len(shape) else 1
+    n_samples = shape[axes.index("S")] if "S" in axes and axes.index("S") < len(shape) else 1
+
+    if n_channels >= 2:
+        return True
+    if n_samples >= 3:
+        return False
+    return True
+
+
 def probe_is_multiplex_tiff(path: Path) -> bool:
     """
     Return True if this path should be handled by QptiffDZ/mxtifffile.
 
     For .qptiff we accept the extension.
 
-    For .tif/.tiff we inspect metadata. This prevents normal RGB WSI TIFFs
-    from being incorrectly routed away from OpenSlide.
+    For .tif/.tiff (including .ome.tif/.ome.tiff) we inspect metadata. This
+    catches OME-TIFF and Vectra/Akoya component TIFFs while preventing normal
+    RGB WSI TIFFs from being incorrectly routed away from OpenSlide.
     """
     ext = path.suffix.lower()
 
@@ -64,6 +101,11 @@ def probe_is_multiplex_tiff(path: Path) -> bool:
 
     try:
         with tifffile.TiffFile(str(path)) as tif:
+            # OME-TIFF: detected via tifffile's is_ome flag + OME-XML.
+            # mxtifffile parses channels from the OME metadata directly.
+            if _looks_like_multichannel_ome(tif):
+                return True
+
             descs: list[str] = []
 
             # Inspect a small number of pages only; no pixel read.
